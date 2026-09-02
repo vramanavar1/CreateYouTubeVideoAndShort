@@ -1,0 +1,24 @@
+{
+  "analyzers": {
+    "core": {
+      "enabled": true,
+      "rules": {
+        "no-hardcoded-env-urls": { "level": "error" },
+        "no-unused-params": { "level": "warning" },
+        "no-unused-vars": { "level": "warning" },
+        "outputs-should-not-contain-secrets": { "level": "error" },
+        "prefer-interpolation": { "level": "warning" },
+        "secure-parameter-default": { "level": "error" },
+        "secure-secrets-in-params": { "level": "error" },
+        "simplify-interpolation": { "level": "warning" }
+      }
+    }
+  },
+  "moduleAliases": {
+    "br": {
+      "avm": {
+        "registry": "mcr.microsoft.com/bicep/avm"
+      }
+    }
+  }
+}

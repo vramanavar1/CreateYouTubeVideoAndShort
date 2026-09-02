@@ -1,0 +1,27 @@
+# Secrets -- never commit. Paths are referenced from .env, files live outside VCS.
+.env
+*.token.json
+token*.json
+client_secret*.json
+credentials.json
+
+# Runtime state: job records, downloaded attachments, rendered media, logs.
+var/
+
+# Licensed audio is not ours to redistribute; only the manifest is tracked.
+assets/audio/*
+!assets/audio/.gitkeep
+!assets/audio/AUDIO_LICENSES.md
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/

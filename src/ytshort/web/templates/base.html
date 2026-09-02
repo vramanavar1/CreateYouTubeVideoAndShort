@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}ytshort review{% endblock %}</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --border: #e2e5ea;
+    --text: #16181d;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --ok: #15803d;
+    --warn: #b45309;
+    --block: #b91c1c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115;
+      --panel: #171a21;
+      --border: #272b34;
+      --text: #e8eaed;
+      --muted: #9aa1ad;
+      --accent: #60a5fa;
+      --ok: #4ade80;
+      --warn: #fbbf24;
+      --block: #f87171;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+    display: flex; align-items: baseline; gap: 16px;
+  }
+  header h1 { font-size: 17px; margin: 0; letter-spacing: -0.01em; }
+  header a { color: var(--accent); text-decoration: none; font-size: 14px; }
+  main { max-width: 1080px; margin: 0 auto; padding: 24px; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+    margin-bottom: 18px;
+  }
+  .panel h2 { margin: 0 0 12px; font-size: 14px; text-transform: uppercase;
+              letter-spacing: 0.06em; color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border);
+           vertical-align: top; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+  td a { color: var(--accent); text-decoration: none; }
+  .pill {
+    display: inline-block; padding: 2px 9px; border-radius: 999px;
+    font-size: 12px; font-weight: 600; border: 1px solid var(--border);
+  }
+  .pill.awaiting_review { color: var(--warn); border-color: var(--warn); }
+  .pill.done, .pill.published, .pill.approved { color: var(--ok); border-color: var(--ok); }
+  .pill.quarantined, .pill.failed, .pill.rejected { color: var(--block); border-color: var(--block); }
+  .sev { font-weight: 600; font-size: 12px; text-transform: uppercase; }
+  .sev.info { color: var(--muted); }
+  .sev.warn { color: var(--warn); }
+  .sev.blocking { color: var(--block); }
+  .grid { display: grid; grid-template-columns: minmax(0, 320px) minmax(0, 1fr); gap: 20px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  video, img.preview { width: 100%; border-radius: 8px; background: #000; display: block; }
+  label { display: block; font-size: 12px; text-transform: uppercase;
+          letter-spacing: 0.05em; color: var(--muted); margin: 12px 0 4px; }
+  input[type=text], textarea {
+    width: 100%; padding: 9px 11px; border-radius: 7px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text);
+    font: inherit;
+  }
+  textarea { min-height: 90px; resize: vertical; }
+  .actions { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+  button {
+    padding: 10px 18px; border-radius: 7px; border: 1px solid transparent;
+    font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button.approve { background: var(--ok); color: #fff; }
+  button.reject { background: transparent; color: var(--block); border-color: var(--block); }
+  .muted { color: var(--muted); }
+  .empty { padding: 36px; text-align: center; color: var(--muted); }
+  code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 13px; }
+  dl.meta { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 0; }
+  dl.meta dt { color: var(--muted); font-size: 13px; }
+  dl.meta dd { margin: 0; font-size: 13px; word-break: break-word; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ytshort</h1>
+  <a href="/reviews">review queue</a>
+</header>
+<main>{% block content %}{% endblock %}</main>
+</body>
+</html>

@@ -1,0 +1,68 @@
+[project]
+name = "ytshort"
+version = "0.1.0"
+description = "Gmail -> YouTube Short pipeline with human-in-the-loop approval"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.9",
+    "python-dotenv>=1.0",
+    "pillow>=11.0",
+    "filetype>=1.2",
+    "typer>=0.15",
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.12",
+    "google-api-python-client>=2.150",
+    "google-auth>=2.35",
+    "google-auth-oauthlib>=1.2",
+]
+
+[project.optional-dependencies]
+# Optional capability providers. The pipeline degrades gracefully when these are
+# absent -- see stages/pii.py (OCR) and integrations/moderation.py (vision).
+ocr = ["pytesseract>=0.3.13"]
+moderation = ["anthropic>=1.0"]
+# Needed only in the Azure deployment: Key Vault credential store and the ARM
+# call that starts the scheduled Job. A laptop install stays light without it.
+azure = ["azure-identity>=1.19", "azure-keyvault-secrets>=4.9"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "ruff>=0.8",
+    # Starlette's TestClient wants httpx2; plain httpx works but warns.
+    "httpx2>=0.29",
+]
+
+[project.scripts]
+ytshort = "ytshort.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ytshort"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests deliberately use assert-heavy, repetitive fixtures.
+"tests/*" = ["B011"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "ffmpeg: requires a real ffmpeg/ffprobe binary on PATH (skipped when absent)",
+    "integration: touches the filesystem end to end, but never the network",
+]

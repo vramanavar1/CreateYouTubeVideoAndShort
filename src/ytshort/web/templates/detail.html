@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% block title %}{{ job.title or "Review" }} — ytshort{% endblock %}
+
+{% block content %}
+<div class="panel">
+  <span class="pill {{ job.state.value }}">{{ job.state.value }}</span>
+  <h2 style="margin-top:12px">Source email</h2>
+  <dl class="meta">
+    <dt>Subject</dt><dd>{{ job.source.subject or "(none)" }}</dd>
+    <dt>From</dt><dd>{{ job.source.sender }}</dd>
+    <dt>Received</dt>
+    <dd>{{ job.source.received_at.strftime("%Y-%m-%d %H:%M") if job.source.received_at else "unknown" }}</dd>
+    <dt>Snippet</dt><dd>{{ job.source.body_snippet or "(empty)" }}</dd>
+    <dt>Job</dt><dd><code>{{ job.job_id }}</code></dd>
+  </dl>
+</div>
+
+<div class="grid">
+  <div>
+    <div class="panel">
+      <h2>Composed short</h2>
+      {% if job.media.composed_video %}
+        <video controls preload="metadata"
+               poster="/media/{{ job.job_id }}/{{ job.media.thumbnail_tall }}"
+               src="/media/{{ job.job_id }}/{{ job.media.composed_video }}"></video>
+        <dl class="meta" style="margin-top:12px">
+          <dt>Length</dt>
+          <dd>{{ "%.1f"|format(job.media.duration_seconds or 0) }}s</dd>
+          <dt>Track</dt><dd>{{ job.media.audio_track or "—" }}</dd>
+        </dl>
+      {% else %}
+        <p class="muted">Not rendered yet.</p>
+      {% endif %}
+    </div>
+
+    {% if job.media.thumbnail_wide %}
+    <div class="panel">
+      <h2>Upload thumbnail</h2>
+      <img class="preview" alt="thumbnail"
+           src="/media/{{ job.job_id }}/{{ job.media.thumbnail_wide }}">
+    </div>
+    {% endif %}
+  </div>
+
+  <div>
+    {% if job.findings %}
+    <div class="panel">
+      <h2>Screening findings</h2>
+      <table>
+        <thead><tr><th>Severity</th><th>Finding</th><th>Where</th></tr></thead>
+        <tbody>
+          {% for f in job.findings %}
+          <tr>
+            <td><span class="sev {{ f.severity.value }}">{{ f.severity.value }}</span></td>
+            <td>
+              <code>{{ f.kind }}</code><br>
+              <span class="muted">{{ f.detail }}</span>
+              {% if f.action_taken and f.action_taken != "none" %}
+                <br><span class="muted">→ {{ f.action_taken }}</span>
+              {% endif %}
+            </td>
+            <td class="muted">{{ f.where }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    {% if can_decide %}
+    <div class="panel">
+      <h2>Publish decision</h2>
+      <form method="post" action="/reviews/{{ job.job_id }}/approve">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label for="title">Title (max 100 chars)</label>
+        <input type="text" id="title" name="title" maxlength="100" value="{{ job.title }}">
+        <label for="description">Description</label>
+        <textarea id="description" name="description">{{ job.description or job.source.body_snippet }}</textarea>
+        <label for="tags">Tags (comma separated)</label>
+        <input type="text" id="tags" name="tags" value="{{ job.tags | join(', ') }}">
+        <div class="actions">
+          <button type="submit" class="approve">Approve &amp; publish</button>
+        </div>
+      </form>
+      <form method="post" action="/reviews/{{ job.job_id }}/reject" style="margin-top:18px">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label for="reason">Rejection reason</label>
+        <input type="text" id="reason" name="reason" placeholder="why this should not be published">
+        <div class="actions">
+          <button type="submit" class="reject">Reject</button>
+        </div>
+      </form>
+      <p class="muted" style="margin-top:14px;font-size:13px">
+        Approving uploads immediately. This page will take a moment to come back.
+      </p>
+    </div>
+    {% elif job.review %}
+    <div class="panel">
+      <h2>Decision</h2>
+      <dl class="meta">
+        <dt>Outcome</dt><dd>{{ job.review.decision }}</dd>
+        <dt>Reviewer</dt><dd>{{ job.review.reviewer }}</dd>
+        <dt>When</dt><dd>{{ job.review.decided_at.strftime("%Y-%m-%d %H:%M") }}</dd>
+        {% if job.review.reason %}<dt>Reason</dt><dd>{{ job.review.reason }}</dd>{% endif %}
+      </dl>
+    </div>
+    {% endif %}
+
+    {% if job.publication %}
+    <div class="panel">
+      <h2>Published</h2>
+      <dl class="meta">
+        <dt>Link</dt>
+        <dd><a href="{{ job.publication.short_url }}" target="_blank" rel="noopener">{{ job.publication.short_url }}</a></dd>
+        <dt>Visibility</dt><dd>{{ job.publication.privacy_status }}</dd>
+        <dt>Thumbnail</dt><dd>{{ "set" if job.publication.thumbnail_set else "not set" }}</dd>
+      </dl>
+    </div>
+    {% endif %}
+
+    {% if job.deliveries %}
+    <div class="panel">
+      <h2>Delivery</h2>
+      <table>
+        <thead><tr><th>Sink</th><th>Status</th><th>Detail</th></tr></thead>
+        <tbody>
+          {% for d in job.deliveries %}
+          <tr>
+            <td>{{ d.sink }}</td>
+            <td><span class="sev {{ 'info' if d.ok else 'blocking' }}">{{ "ok" if d.ok else "failed" }}</span></td>
+            <td class="muted">{{ d.detail }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    <div class="panel">
+      <h2>Stage trail</h2>
+      <table>
+        <thead><tr><th>Stage</th><th>Status</th><th>ms</th><th>Detail</th></tr></thead>
+        <tbody>
+          {% for name, s in job.stages.items() %}
+          <tr>
+            <td>{{ name }}</td>
+            <td>{{ s.status.value }}</td>
+            <td class="muted">{{ s.duration_ms if s.duration_ms is not none else "—" }}</td>
+            <td class="muted">{{ s.detail }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% if job.error %}<p class="muted" style="margin-top:12px"><code>{{ job.error }}</code></p>{% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}
