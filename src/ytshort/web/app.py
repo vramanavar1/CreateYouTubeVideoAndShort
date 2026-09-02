@@ -20,6 +20,7 @@ from ytshort.config import Settings
 from ytshort.integrations.job_trigger import build_job_trigger
 from ytshort.observability.logging import get_logger
 from ytshort.runtime import build_context
+from ytshort.web.middleware import CorrelationIdMiddleware, SecurityHeadersMiddleware
 
 log = get_logger(__name__)
 
@@ -57,6 +58,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         settings, with_google=not settings.job_trigger_enabled
     )
     app.state.job_trigger = build_job_trigger(settings)
+
+    # Starlette runs the last-added middleware outermost, so correlation is added
+    # last and therefore wraps everything -- a CSRF or auth rejection is logged
+    # with the same id as the request that caused it.
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(CorrelationIdMiddleware)
 
     app.include_router(build_router())
     return app

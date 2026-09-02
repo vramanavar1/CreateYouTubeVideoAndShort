@@ -1,96 +1,35 @@
-"""Structured logging with a per-job correlation ID.
+"""Back-compat shim. The implementation now lives in the reusable ``ccol`` package.
 
-The whole point of this module is that one job's entire lifecycle -- ingest,
-screening, render, review, publish, fan-out -- can be pulled out of a mixed log
-stream with a single grep on ``correlation_id``. A ``contextvar`` carries the id
-so call sites never have to thread it through their signatures.
+27 modules import ``from ytshort.observability.logging import get_logger``. There
+is no value in a 27-file rename commit, and keeping this indirection documents
+that logging is no longer ytshort-specific -- it is the cross-cutting
+observability layer, configured once in ``runtime.bootstrap``.
+
+``use_job`` keeps its historical name here because it reads correctly at the one
+call site that matters (the pipeline runner binds a *job* id); ``ccol`` calls the
+same thing ``use_correlation`` because it knows nothing about jobs.
 """
 
 from __future__ import annotations
 
-import json
-import logging
-import sys
-from collections.abc import Iterator
-from contextlib import contextmanager
-from contextvars import ContextVar
 from pathlib import Path
-from typing import Any
 
-_correlation_id: ContextVar[str] = ContextVar("correlation_id", default="-")
+from ccol.context import correlation_id
+from ccol.context import use_correlation as use_job
+from ccol.logging import ConsoleFormatter, JsonFormatter, get_logger
+from ccol.logging import setup_logging as _setup_logging
 
-# Attributes present on every LogRecord; anything else a caller attaches via
-# ``extra=`` is treated as structured context and emitted alongside the message.
-_RESERVED = frozenset(
-    logging.LogRecord("", 0, "", 0, "", None, None).__dict__.keys()
-    | {"message", "asctime", "taskName"}
-)
+#: Chatty at INFO, and they drown out our own lines.
+NOISY_LOGGERS = ("googleapiclient", "google_auth_oauthlib", "urllib3")
 
-
-def correlation_id() -> str:
-    return _correlation_id.get()
-
-
-@contextmanager
-def use_job(job_id: str) -> Iterator[None]:
-    """Bind a job id to every log record emitted inside the block."""
-    token = _correlation_id.set(job_id)
-    try:
-        yield
-    finally:
-        _correlation_id.reset(token)
-
-
-class _CorrelationFilter(logging.Filter):
-    def filter(self, record: logging.LogRecord) -> bool:
-        record.correlation_id = _correlation_id.get()
-        return True
-
-
-def _extras(record: logging.LogRecord) -> dict[str, Any]:
-    return {
-        key: value
-        for key, value in record.__dict__.items()
-        if key not in _RESERVED and key != "correlation_id"
-    }
-
-
-class JsonFormatter(logging.Formatter):
-    """One JSON object per line -- what App Insights / any log shipper wants."""
-
-    def format(self, record: logging.LogRecord) -> str:
-        payload: dict[str, Any] = {
-            "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
-            "level": record.levelname,
-            "logger": record.name,
-            "correlation_id": getattr(record, "correlation_id", "-"),
-            "message": record.getMessage(),
-        }
-        payload.update(_extras(record))
-        if record.exc_info:
-            payload["exception"] = self.formatException(record.exc_info)
-        return json.dumps(payload, default=str)
-
-
-class ConsoleFormatter(logging.Formatter):
-    """Human-readable variant for interactive CLI runs."""
-
-    def format(self, record: logging.LogRecord) -> str:
-        cid = getattr(record, "correlation_id", "-")
-        # Short-form the job id: the first 8 chars are plenty to eyeball, and the
-        # full value is always available in the JSON sink.
-        cid_short = cid[:8] if cid != "-" else "-"
-        head = (
-            f"{self.formatTime(record, '%H:%M:%S')} {record.levelname:<7} "
-            f"[{cid_short}] {record.name.removeprefix('ytshort.')}: {record.getMessage()}"
-        )
-        extras = _extras(record)
-        if extras:
-            rendered = " ".join(f"{k}={v}" for k, v in extras.items())
-            head = f"{head} | {rendered}"
-        if record.exc_info:
-            head = f"{head}\n{self.formatException(record.exc_info)}"
-        return head
+__all__ = [
+    "ConsoleFormatter",
+    "JsonFormatter",
+    "correlation_id",
+    "get_logger",
+    "setup_logging",
+    "use_job",
+]
 
 
 def setup_logging(
@@ -99,30 +38,10 @@ def setup_logging(
     log_file: Path | None = None,
 ) -> None:
     """Configure the root logger. Safe to call more than once."""
-    root = logging.getLogger()
-    root.setLevel(level.upper())
-    for handler in list(root.handlers):
-        root.removeHandler(handler)
-
-    stream = logging.StreamHandler(sys.stderr)
-    stream.setFormatter(JsonFormatter() if fmt == "json" else ConsoleFormatter())
-    stream.addFilter(_CorrelationFilter())
-    root.addHandler(stream)
-
-    # The file sink is always JSON regardless of console format -- the console is
-    # for a human watching a run, the file is for grepping afterwards.
-    if log_file is not None:
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(log_file, encoding="utf-8")
-        file_handler.setFormatter(JsonFormatter())
-        file_handler.addFilter(_CorrelationFilter())
-        root.addHandler(file_handler)
-
-    # googleapiclient is extremely chatty at INFO and drowns out our own lines.
-    logging.getLogger("googleapiclient").setLevel(logging.WARNING)
-    logging.getLogger("google_auth_oauthlib").setLevel(logging.WARNING)
-    logging.getLogger("urllib3").setLevel(logging.WARNING)
-
-
-def get_logger(name: str) -> logging.Logger:
-    return logging.getLogger(name)
+    _setup_logging(
+        level=level,
+        fmt=fmt,
+        log_file=log_file,
+        service_prefix="ytshort",
+        noisy_loggers=NOISY_LOGGERS,
+    )

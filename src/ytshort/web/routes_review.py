@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ccol import current
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from ytshort.contracts.models import Job, JobState
-from ytshort.observability.logging import get_logger
+from ytshort.observability import instruments
+from ytshort.observability.logging import get_logger, use_job
 from ytshort.runtime import record_decision, resume_job
 from ytshort.web.app import CSRF_COOKIE
 
@@ -47,6 +49,9 @@ def _check_csrf(request: Request, token: str) -> None:
     expected = request.app.state.csrf_token
     cookie = request.cookies.get(CSRF_COOKIE, "")
     if not token or token != expected or cookie != expected:
+        # Logged, never with the token values themselves.
+        log.warning("csrf check failed", extra={"event": "security.csrf_rejected"})
+        instruments.security_events().add(1, {"event": "csrf_rejected"})
         raise HTTPException(status_code=403, detail="CSRF token mismatch; reload the page")
 
 
@@ -110,6 +115,10 @@ def build_router() -> APIRouter:
             "credential_source": credentials.source,
             "awaiting_review": len(ctx.job_store.list_jobs(JobState.awaiting_review)),
             "job_trigger_enabled": settings.job_trigger_enabled,
+            # Whether telemetry is wired, never the connection string that wires it.
+            "telemetry_exporting": current().azure_enabled,
+            "service_name": settings.service_name,
+            "environment": settings.environment_name,
         }
 
     @router.get("/reviews", response_class=HTMLResponse)
@@ -177,38 +186,46 @@ def build_router() -> APIRouter:
         ctx = request.app.state.context_factory()
         job = _load_decidable(ctx, job_id)
 
-        # Reviewer edits win over whatever the pipeline derived.
-        if title.strip():
-            job.title = title.strip()[:100]
-        if description.strip():
-            job.description = description.strip()
-        if tags.strip():
-            job.tags = [t.strip() for t in tags.split(",") if t.strip()]
+        # Rebind from the request id to the job id, which is what the scheduled Job
+        # will log against for the same work. Bound after the load, not from the raw
+        # path segment: _load_decidable is what proves the id is real.
+        with use_job(job.job_id):
+            # Reviewer edits win over whatever the pipeline derived.
+            if title.strip():
+                job.title = title.strip()[:100]
+            if description.strip():
+                job.description = description.strip()
+            if tags.strip():
+                job.tags = [t.strip() for t in tags.split(",") if t.strip()]
 
-        reviewer = _reviewer(request)
-        record_decision(job, ctx, decision="approved", reviewer=reviewer)
-        log.info("approved via review UI", extra={"job": job_id, "reviewer": reviewer})
+            reviewer = _reviewer(request)
+            record_decision(job, ctx, decision="approved", reviewer=reviewer)
+            log.info(
+                "approved via review UI",
+                extra={"event": "review.decision", "decision": "approved", "reviewer": reviewer},
+            )
+            instruments.security_events().add(1, {"event": "review_approved"})
 
-        # Publishing happens in the scheduled Job, never here. This app holds no
-        # Google credential by design, so all it can do is ask the Job to run now
-        # instead of at the next cron tick.
-        settings = request.app.state.settings
-        if settings.job_trigger_enabled:
-            result = request.app.state.job_trigger.start()
-            if result.ok:
-                log.info("triggered the publish job", extra={"detail": result.detail})
+            # Publishing happens in the scheduled Job, never here. This app holds no
+            # Google credential by design, so all it can do is ask the Job to run now
+            # instead of at the next cron tick.
+            settings = request.app.state.settings
+            if settings.job_trigger_enabled:
+                result = request.app.state.job_trigger.start()
+                if result.ok:
+                    log.info("triggered the publish job", extra={"detail": result.detail})
+                else:
+                    # Not something the reviewer must act on -- the scheduled run will
+                    # pick the approved job up regardless. Worth a log line, not a 500.
+                    log.warning(
+                        "could not trigger the publish job; the next scheduled run will "
+                        "handle it",
+                        extra={"detail": result.detail},
+                    )
             else:
-                # Not something the reviewer must act on -- the scheduled run will
-                # pick the approved job up regardless. Worth a log line, not a 500.
-                log.warning(
-                    "could not trigger the publish job; the next scheduled run will "
-                    "handle it",
-                    extra={"detail": result.detail},
-                )
-        else:
-            # Local development: there is no Job to trigger, and this context does
-            # carry Google clients, so publish inline as before.
-            resume_job(job_id, ctx)
+                # Local development: there is no Job to trigger, and this context does
+                # carry Google clients, so publish inline as before.
+                resume_job(job_id, ctx)
 
         return RedirectResponse(f"/reviews/{job_id}", status_code=303)
 
@@ -223,11 +240,16 @@ def build_router() -> APIRouter:
         ctx = request.app.state.context_factory()
         job = _load_decidable(ctx, job_id)
 
-        reviewer = _reviewer(request)
-        record_decision(
-            job, ctx, decision="rejected", reviewer=reviewer, reason=reason.strip()
-        )
-        log.info("rejected via review UI", extra={"job": job_id, "reviewer": reviewer})
+        with use_job(job.job_id):
+            reviewer = _reviewer(request)
+            record_decision(
+                job, ctx, decision="rejected", reviewer=reviewer, reason=reason.strip()
+            )
+            log.info(
+                "rejected via review UI",
+                extra={"event": "review.decision", "decision": "rejected", "reviewer": reviewer},
+            )
+            instruments.security_events().add(1, {"event": "review_rejected"})
         return RedirectResponse(f"/reviews/{job_id}", status_code=303)
 
     return router

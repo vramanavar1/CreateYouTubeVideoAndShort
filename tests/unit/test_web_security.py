@@ -243,3 +243,106 @@ class TestMandatoryAllowList:
 
         with pytest.raises(ConfigError, match="ALLOWED_SENDERS"):
             Settings.load(env_file=tmp_path / "absent.env")
+
+
+class TestCorrelationHeader:
+    def test_a_response_carries_a_correlation_id(self, settings) -> None:
+        client = TestClient(create_app(settings))
+        response = client.get("/reviews")
+
+        assert response.headers["x-correlation-id"]
+
+    def test_an_inbound_id_is_honoured(self, settings) -> None:
+        client = TestClient(create_app(settings))
+        response = client.get("/reviews", headers={"X-Correlation-Id": "caller-supplied-1"})
+
+        assert response.headers["x-correlation-id"] == "caller-supplied-1"
+
+    def test_a_w3c_traceparent_supplies_the_trace_id(self, settings) -> None:
+        client = TestClient(create_app(settings))
+        trace_id = "4bf92f3577b34da6a3ce929d0e0e4736"
+        response = client.get(
+            "/reviews",
+            headers={"traceparent": f"00-{trace_id}-00f067aa0ba902b7-01"},
+        )
+
+        assert response.headers["x-correlation-id"] == trace_id
+
+    @pytest.mark.parametrize(
+        "hostile",
+        [
+            "\r\nSet-Cookie: x=1",
+            "not a valid id",
+            "x" * 500,
+            "../../etc/passwd",
+            '{"level":"INFO"}',
+        ],
+    )
+    def test_a_hostile_id_is_replaced_not_reflected(self, settings, hostile: str) -> None:
+        # An inbound id lands in a log field. Reflecting it would let a caller forge
+        # log lines, and an unbounded value is a cheap way to inflate log volume.
+        client = TestClient(create_app(settings))
+        response = client.get("/reviews", headers={"X-Correlation-Id": hostile})
+
+        emitted = response.headers["x-correlation-id"]
+        assert emitted != hostile
+        assert emitted.isalnum() and len(emitted) == 32
+
+    def test_health_is_not_instrumented(self, settings) -> None:
+        # The readiness probe hits it every ten seconds. Correlating that is 8,640
+        # billed records a day saying nothing.
+        client = TestClient(create_app(settings))
+        response = client.get("/health")
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok"}
+        assert "x-correlation-id" not in response.headers
+
+
+class TestSecurityHeaders:
+    @pytest.mark.parametrize(
+        ("header", "expected"),
+        [
+            ("x-content-type-options", "nosniff"),
+            ("x-frame-options", "DENY"),
+            ("referrer-policy", "no-referrer"),
+        ],
+    )
+    def test_they_are_present(self, settings, header: str, expected: str) -> None:
+        client = TestClient(create_app(settings))
+        assert client.get("/reviews").headers[header] == expected
+
+    def test_the_csp_forbids_scripts(self, settings) -> None:
+        # The UI renders attacker-influenced text -- subjects, filenames, OCR output.
+        # It contains no scripts of its own, so 'none' costs nothing and is real.
+        client = TestClient(create_app(settings))
+        csp = client.get("/reviews").headers["content-security-policy"]
+
+        assert "default-src 'none'" in csp
+        assert "frame-ancestors 'none'" in csp
+        assert "script-src" not in csp  # inherits 'none' from default-src
+
+
+class TestNoConnectionStringIsDisclosed:
+    def test_health_endpoints_never_echo_it(self, tmp_path, monkeypatch) -> None:
+        sentinel = "InstrumentationKey=deadbeef-0000-0000-0000-000000000000"
+        monkeypatch.setenv("APPLICATIONINSIGHTS_CONNECTION_STRING", sentinel)
+        azure = _azure_settings(tmp_path, monkeypatch)
+        assert azure.otel_connection_string == sentinel
+
+        client = TestClient(create_app(azure))
+        for path in ("/health", "/health/detail"):
+            body = client.get(path).text
+            assert sentinel not in body
+            assert "deadbeef" not in body
+            assert "InstrumentationKey" not in body
+
+    def test_health_detail_reports_only_whether_export_is_on(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        azure = _azure_settings(tmp_path, monkeypatch)
+        client = TestClient(create_app(azure))
+        payload = client.get("/health/detail").json()
+
+        assert payload["telemetry_exporting"] is False
+        assert payload["service_name"] == "ytshort"

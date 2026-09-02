@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 import typer
+from ccol import current, new_correlation_id, use_correlation
 
 from ytshort.config import ConfigError, Settings
 from ytshort.contracts.models import JobState
@@ -400,6 +401,11 @@ def doctor() -> None:
         else f"no audio track in {settings.audio_dir} -- drop in an .mp3 you may use",
     )
 
+    # The audit submission tells Google the manifest is authoritative; a track
+    # missing from it is a copyright claim you cannot dispute.
+    for problem in settings.audio_licence_problems():
+        report(False, problem, warn_only=True)
+
     if settings.malware_scanner == "defender":
         scanner = DefenderScanner()
         report(
@@ -431,6 +437,18 @@ def doctor() -> None:
         else "tesseract not found -- image PII screening will be skipped and flagged",
         warn_only=True,
     )
+
+    # Never prints the connection string, only whether one is wired.
+    report(
+        True,
+        f"telemetry: exporting to Application Insights as "
+        f"'{settings.service_name}' ({settings.environment_name})"
+        if current().azure_enabled
+        else "telemetry: not configured -- structured JSON to stdout only",
+        warn_only=True,
+    )
+    for problem in [p for p in settings.validation_problems() if "observability" in p]:
+        report(False, problem, warn_only=True)
 
     if settings.privacy_status != "private":
         typer.secho(
@@ -555,7 +573,11 @@ def _print_outcome(outcome) -> None:
 
 def main() -> None:
     try:
-        app()
+        # A run-level id so `ytshort status`, `doctor` and `prune` are correlated
+        # too. The runner's per-job binding nests inside this and restores on exit,
+        # so a run reads as: one invocation id, one id per job it touched.
+        with use_correlation(new_correlation_id()):
+            app()
     except KeyboardInterrupt:  # pragma: no cover - interactive only
         typer.echo("\nInterrupted.")
         sys.exit(130)

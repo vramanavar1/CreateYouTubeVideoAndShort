@@ -195,3 +195,22 @@ def run_consent_flow(settings: Settings, *, store: CredentialStore | None = None
     )
     store.save(creds)
     return creds
+
+
+#: httplib2 -- which googleapiclient uses underneath -- defaults to *no* socket
+#: timeout. A connection that hangs would then block the container indefinitely
+#: while holding the job lock, so nothing else can touch that job either.
+HTTP_TIMEOUT_SECONDS = 120
+
+
+def authorized_http(credentials, timeout: int = HTTP_TIMEOUT_SECONDS):
+    """An authorised transport with a socket timeout.
+
+    Pass this to ``build(..., http=...)`` instead of ``credentials=``:
+    googleapiclient rejects both at once, and only this form lets a timeout
+    through to the underlying connection.
+    """
+    import google_auth_httplib2
+    import httplib2
+
+    return google_auth_httplib2.AuthorizedHttp(credentials, http=httplib2.Http(timeout=timeout))

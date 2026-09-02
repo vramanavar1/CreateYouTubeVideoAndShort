@@ -13,6 +13,8 @@ defensive one:
 from __future__ import annotations
 
 from ytshort.contracts.models import Finding, Job, JobState, Publication, Severity
+from ytshort.integrations.faults import is_transient
+from ytshort.observability import instruments
 from ytshort.observability.logging import get_logger
 from ytshort.pipeline.signals import HaltPipeline, RetryableFailure
 from ytshort.pipeline.stage import BaseStage, PipelineContext
@@ -66,7 +68,16 @@ class PublishStage(BaseStage):
                 category_id=settings.video_category_id,
                 privacy_status=settings.privacy_status,
             )
-        except Exception as exc:  # noqa: BLE001 - upload faults are worth retrying
+        except Exception as exc:  # noqa: BLE001 - classified below, never blindly retried
+            if not is_transient(exc):
+                # A 403 for an exhausted quota, an unverified channel or a revoked
+                # credential returns the same answer on every scheduled run. Retrying
+                # it forever is a self-inflicted DoS against YouTube; halt instead so
+                # a human sees it.
+                raise HaltPipeline(
+                    f"upload rejected and will not succeed on retry: {exc!r}",
+                    JobState.failed,
+                ) from exc
             raise RetryableFailure(f"upload failed: {exc!r}") from exc
 
         job.publication = Publication(
@@ -80,6 +91,14 @@ class PublishStage(BaseStage):
         # Persist immediately: everything below this line is optional, and the
         # video_id must survive even if the process dies in the next statement.
         ctx.job_store.save(job)
+
+        instruments.publish_outcomes().add(
+            1,
+            {
+                "requested": settings.privacy_status,
+                "applied": result.uploaded_privacy_status,
+            },
+        )
 
         if result.uploaded_privacy_status != settings.privacy_status:
             job.add_finding(

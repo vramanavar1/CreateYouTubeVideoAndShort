@@ -41,7 +41,14 @@ class SuspendPipeline(PipelineSignal):
 
 
 class RetryableFailure(PipelineSignal):
-    """A transient fault. The stage is not marked complete, so a re-run retries it."""
+    """A transient fault. The stage is not marked complete, so a re-run retries it.
+
+    ``retry_after_seconds`` is a floor, not a schedule: the runner backs off
+    exponentially on its own and will wait at least this long when a service has
+    told us how long to wait (a ``Retry-After`` header, say). Retries are bounded
+    -- see ``PipelineRunner``, which dead-letters a stage that keeps failing rather
+    than asking a broken service forever.
+    """
 
     def __init__(self, reason: str, retry_after_seconds: float = 0.0) -> None:
         super().__init__(reason)

@@ -21,6 +21,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
+from ytshort.observability import instruments
 from ytshort.observability.logging import get_logger
 
 if TYPE_CHECKING:
@@ -100,11 +101,23 @@ class ContainerAppsJobTrigger:
                 name = ""
                 with contextlib.suppress(json.JSONDecodeError, AttributeError):
                     name = json.loads(body).get("name", "")
-                log.info("scheduled job triggered", extra={"execution": name})
+                # The execution name is the join key between this approval and
+                # everything the scheduled Job then does: that process reads the
+                # same value from CONTAINER_APP_JOB_EXECUTION_NAME. We deliberately
+                # do not pass a traceparent -- the ARM start override replaces the
+                # container spec rather than merging into it, and one execution
+                # advances every pending job, so a single trace would misparent
+                # other jobs' work.
+                log.info(
+                    "scheduled job triggered",
+                    extra={"event": "job_trigger.requested", "execution_name": name},
+                )
+                instruments.job_trigger_requests().add(1, {"ok": "true"})
                 return TriggerResult(ok=True, detail=f"execution {name or 'started'}")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:400]
             log.warning("job trigger rejected", extra={"status": exc.code})
+            instruments.job_trigger_requests().add(1, {"ok": "false"})
             return TriggerResult(ok=False, detail=f"ARM returned {exc.code}: {detail}")
         except urllib.error.URLError as exc:
             return TriggerResult(ok=False, detail=f"ARM unreachable: {exc.reason}")

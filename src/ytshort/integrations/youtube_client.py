@@ -56,10 +56,12 @@ class YouTubeClient:
     def build(cls, settings, *, allow_interactive: bool = False) -> YouTubeClient:
         from googleapiclient.discovery import build
 
-        from ytshort.integrations.google_auth import load_credentials
+        from ytshort.integrations.google_auth import authorized_http, load_credentials
 
         creds = load_credentials(settings, allow_interactive=allow_interactive)
-        service = build("youtube", "v3", credentials=creds, cache_discovery=False)
+        service = build(
+            "youtube", "v3", http=authorized_http(creds), cache_discovery=False
+        )
         return cls(service)
 
     def upload_video(

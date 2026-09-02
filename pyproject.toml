@@ -5,6 +5,10 @@ description = "Gmail -> YouTube Short pipeline with human-in-the-loop approval"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    # The cross-cutting observability layer, developed in this repo at libs/ccol
+    # and reusable by other projects. It has no dependencies of its own, so this
+    # is a free dependency until the observability extra is also selected.
+    "ccol",
     "pydantic>=2.9",
     "python-dotenv>=1.0",
     "pillow>=11.0",
@@ -27,6 +31,9 @@ moderation = ["anthropic>=1.0"]
 # Needed only in the Azure deployment: Key Vault credential store and the ARM
 # call that starts the scheduled Job. A laptop install stays light without it.
 azure = ["azure-identity>=1.19", "azure-keyvault-secrets>=4.9"]
+# Ships telemetry to Application Insights. Without it the pipeline still logs
+# structured JSON to stdout and imports no telemetry package at all.
+observability = ["ccol[azure]"]
 
 [dependency-groups]
 dev = [
@@ -43,6 +50,12 @@ ytshort = "ytshort.cli:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.uv.workspace]
+members = ["libs/ccol"]
+
+[tool.uv.sources]
+ccol = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ytshort"]
@@ -61,7 +74,9 @@ select = ["E", "F", "I", "UP", "B", "C4", "SIM"]
 [tool.pytest.ini_options]
 addopts = "-ra --strict-markers"
 testpaths = ["tests"]
-pythonpath = ["."]
+# libs/ccol/src is listed so the suite runs against the workspace source without
+# needing the member installed first.
+pythonpath = [".", "libs/ccol/src"]
 markers = [
     "ffmpeg: requires a real ffmpeg/ffprobe binary on PATH (skipped when absent)",
     "integration: touches the filesystem end to end, but never the network",

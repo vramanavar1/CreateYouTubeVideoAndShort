@@ -62,9 +62,11 @@ link. `gmail.modify` is explicitly **not** requested.
 
 ## 3. Quota profile
 
-- **Uploads:** hard-capped at 10 per day in application configuration
-  (`YTSHORT_MAX_EMAILS_PER_DAY`), enforced by a persistent daily counter checked
-  before any mail is fetched. Well inside the 100/day upload allocation.
+- **Uploads:** bounded at 10 per day. The cap is applied at ingest —
+  `YTSHORT_MAX_EMAILS_PER_DAY` limits how many *emails* become jobs per UTC day,
+  enforced by a persistent counter checked before any mail is fetched. Since one
+  email yields at most one upload, and only after a human approves it, uploads are
+  always at or below that number. Well inside the 100/day upload allocation.
 - **Other calls:** a handful of `videos.list`/`videos.update` calls only when
   visibility is being changed. Nominal against the 10,000-unit daily quota.
 - **Polling:** the schedule polls a mailbox, not the YouTube API. An hour with no

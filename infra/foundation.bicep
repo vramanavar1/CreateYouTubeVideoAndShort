@@ -96,6 +96,16 @@ module appInsights 'br/avm:res/insights/component:0.8.0' = {
   }
 }
 
+// Read the connection string the same way the storage account key is read below:
+// with a deploy-time reference() off an `existing` resource. The AVM module does
+// expose it as an output, but a module output is a *nested deployment* output and
+// is recorded in deployment history in plain text -- so using it would leak an
+// ingestion key through the back door.
+resource appInsightsRef 'Microsoft.Insights/components@2020-02-02' existing = {
+  name: names.appInsights
+  dependsOn: [appInsights]
+}
+
 // ---------------------------------------------------------------------------
 // Identities -- one per workload, so they can be granted differently.
 // This separation is the point: the review identity must never be able to read
@@ -282,6 +292,25 @@ resource environmentStorage 'Microsoft.App/managedEnvironments/storages@2024-03-
   }
 }
 
+resource keyVaultRef 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
+  name: names.keyVault
+  dependsOn: [keyVault]
+}
+
+// Declared here rather than through the vault module's `secrets` parameter, for
+// the same reason environmentStorage is declared directly: a module parameter is
+// a nested deployment parameter. Writing it during the foundation deployment is
+// also what keeps this off the operator's checklist -- unlike csrf-secret, nobody
+// has to set it by hand before the apps deployment can reference it.
+resource appInsightsSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+  parent: keyVaultRef
+  name: 'appinsights-connection-string'
+  properties: {
+    value: appInsightsRef.properties.ConnectionString
+    contentType: 'App Insights connection string (contains an ingestion key)'
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Outputs -- identifiers only. Never a secret, never a key.
 // ---------------------------------------------------------------------------
@@ -300,4 +329,8 @@ output jobIdentityClientId string = jobIdentity.outputs.clientId
 output reviewIdentityResourceId string = reviewIdentity.outputs.resourceId
 output reviewIdentityClientId string = reviewIdentity.outputs.clientId
 output reviewIdentityPrincipalId string = reviewIdentity.outputs.principalId
-output appInsightsConnectionStringSecretHint string = 'stored on the App Insights resource; not emitted here'
+output appInsightsName string = names.appInsights
+// The secret's *name*, never its value: the connection string embeds an ingestion
+// key and deployment history is plain text. Both workloads read it from the vault
+// through their own identities.
+output appInsightsSecretName string = appInsightsSecret.name

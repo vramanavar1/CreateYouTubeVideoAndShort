@@ -15,7 +15,8 @@ from ytshort.contracts.models import Job, JobState, Review
 from ytshort.integrations.google_auth import AuthError
 from ytshort.integrations.moderation import build_moderator
 from ytshort.integrations.scanner import build_scanner
-from ytshort.observability.logging import get_logger, setup_logging
+from ytshort.observability.logging import get_logger
+from ytshort.observability.setup import configure_observability
 from ytshort.pipeline.runner import PipelineRunner, RunOutcome
 from ytshort.pipeline.stage import PipelineContext
 from ytshort.stages import build_stages
@@ -26,16 +27,10 @@ log = get_logger(__name__)
 
 
 def bootstrap(settings: Settings | None = None) -> Settings:
-    """Load settings, create runtime directories, and configure logging."""
+    """Load settings, create runtime directories, and configure observability."""
     settings = settings or Settings.load()
     settings.ensure_dirs()
-    setup_logging(
-        level=settings.log_level,
-        fmt=settings.log_format,
-        # In Azure the container's stderr is already collected into Log Analytics,
-        # so a second copy on an SMB share is pure churn.
-        log_file=settings.logs_dir / "ytshort.jsonl" if settings.log_to_file else None,
-    )
+    configure_observability(settings)
     return settings
 
 

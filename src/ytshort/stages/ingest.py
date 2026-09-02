@@ -12,6 +12,7 @@ and the media-type allow-list.
 
 from __future__ import annotations
 
+from hashlib import sha256
 from pathlib import Path
 
 from ytshort.contracts.models import (
@@ -23,10 +24,14 @@ from ytshort.contracts.models import (
     SourceEmail,
     make_job_id,
 )
-from ytshort.observability.logging import get_logger
+from ytshort.integrations.faults import is_transient
+from ytshort.integrations.ffmpeg import FFmpeg, FFmpegError, FFmpegNotAvailable
+from ytshort.observability import instruments
+from ytshort.observability.logging import get_logger, use_job
 from ytshort.pipeline.signals import HaltPipeline, RetryableFailure
 from ytshort.pipeline.stage import BaseStage, PipelineContext
 from ytshort.storage.counters import DailyCounter
+from ytshort.storage.media_store import safe_filename
 
 log = get_logger(__name__)
 
@@ -77,10 +82,17 @@ def discover_jobs(ctx: PipelineContext, limit: int | None = None) -> list[Job]:
         if settings.allowed_senders:
             sender = _sender_address(message.sender)
             if sender not in settings.allowed_senders:
+                # The front door. Worth counting: a rise here is either a
+                # misconfigured allow-list or someone probing the mailbox.
                 log.info(
                     "skipping message from non-allowed sender",
-                    extra={"sender": sender, "message_id": message_id},
+                    extra={
+                        "event": "security.sender_rejected",
+                        "sender": sender,
+                        "message_id": message_id,
+                    },
                 )
+                instruments.security_events().add(1, {"event": "sender_rejected"})
                 continue
 
         if not message.attachments:
@@ -100,13 +112,18 @@ def discover_jobs(ctx: PipelineContext, limit: int | None = None) -> list[Job]:
             ),
             title=message.subject.strip(),
         )
-        ctx.job_store.save(job)
-        counter.increment()
-        created.append(job)
-        log.info(
-            "job created from email",
-            extra={"job": job.job_id, "subject": job.source.subject[:60]},
-        )
+        # discover_jobs runs before the pipeline runner, so without this the most
+        # interesting moment in the system -- a job coming into existence -- is the
+        # one line that has no correlation id.
+        with use_job(job.job_id):
+            ctx.job_store.save(job)
+            counter.increment()
+            created.append(job)
+            instruments.emails_ingested().add(1)
+            log.info(
+                "job created from email",
+                extra={"subject": job.source.subject[:60]},
+            )
 
     return created
 
@@ -174,7 +191,15 @@ class IngestStage(BaseStage):
 
             try:
                 data = ctx.gmail.get_attachment(job.source.message_id, meta.attachment_id)
-            except Exception as exc:  # noqa: BLE001 - network faults are retryable
+            except Exception as exc:  # noqa: BLE001 - classified, not blindly retried
+                if not is_transient(exc):
+                    # A deleted message or a revoked token gives the same answer
+                    # every run; only transient faults earn another attempt.
+                    raise HaltPipeline(
+                        f"could not download attachment {meta.filename!r} and a retry "
+                        f"will not help: {exc!r}",
+                        JobState.failed,
+                    ) from exc
                 raise RetryableFailure(
                     f"could not download attachment {meta.filename!r}: {exc!r}"
                 ) from exc
@@ -220,6 +245,12 @@ class IngestStage(BaseStage):
             )
             raise HaltPipeline("email contained no usable image or video")
 
+        # A video-only email still needs an image for the thumbnail. Derive one
+        # before screening runs, and re-read the media list so it is included.
+        if not any(a.kind == "image" for a in media):
+            self._derive_poster_frame(job, ctx)
+            media = job.media_attachments
+
         # First of each kind wins. The thumbnail needs an image; the body prefers
         # a video and falls back to a still.
         for attachment in media:
@@ -235,6 +266,72 @@ class IngestStage(BaseStage):
         # need gmail.modify -- write access to the whole mailbox -- to achieve
         # something JobStore.known_message_ids() already does. The Gmail query is
         # date-bounded instead, so the listing stays small.
+
+    def _derive_poster_frame(self, job: Job, ctx: PipelineContext) -> None:
+        """Give a video-only email an image, by grabbing a frame from the video.
+
+        Done *here* rather than in the thumbnail stage on purpose. Stage order is
+        ingest -> safety -> pii -> thumbnail, so a frame produced at thumbnail time
+        would be published having passed through neither image moderation nor PII
+        OCR -- and it would make the ``pii.not_screened`` finding (which exists
+        precisely because video frames are never examined) into a false statement.
+        Extracting it now means it is screened like any other image, for free.
+        """
+        source = next(
+            (a for a in job.media_attachments if a.kind == "video" and a.stored_path), None
+        )
+        if source is None or source.stored_path is None:
+            return
+
+        video = ctx.media_store.resolve(job.job_id, source.stored_path)
+        out = ctx.media_store.job_dir(job.job_id) / safe_filename(
+            f"{Path(source.filename).stem}_poster.jpg", fallback="poster.jpg"
+        )
+
+        ffmpeg = FFmpeg.from_settings(ctx.settings)
+        try:
+            ffmpeg.extract_frame(video, out)
+        except (FFmpegNotAvailable, FFmpegError) as exc:
+            # Not fatal here: the thumbnail stage still halts with
+            # thumbnail.no_source_image, which is exactly the old behaviour. The
+            # fallback must not become a new way to fail.
+            job.add_finding(
+                Finding(
+                    stage=self.name,
+                    kind="media.poster_frame_failed",
+                    severity=Severity.warn,
+                    where=source.filename,
+                    detail=f"could not extract a still from the video: {exc}",
+                    action_taken="none; the job has no image",
+                )
+            )
+            return
+
+        job.attachments.append(
+            Attachment(
+                attachment_id=f"{source.attachment_id}:poster",
+                filename=out.name,
+                declared_mime="image/jpeg",
+                size_bytes=out.stat().st_size,
+                kind="image",
+                stored_path=out.name,
+                sha256=sha256(out.read_bytes()).hexdigest(),
+            )
+        )
+        job.add_finding(
+            Finding(
+                stage=self.name,
+                kind="media.poster_frame_derived",
+                severity=Severity.info,
+                where=source.filename,
+                detail=(
+                    "the email carried no image, so a still was taken from the video "
+                    "for the thumbnail. It is screened like any other image."
+                ),
+                action_taken="derived a poster frame",
+            )
+        )
+        log.info("derived a poster frame", extra={"file": out.name})
 
 
 def _classify(suffix: str, settings) -> str:

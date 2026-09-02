@@ -55,6 +55,15 @@ _ENV_KEYS = [
     "AZURE_RESOURCE_GROUP",
     "YTSHORT_AZURE_JOB_NAME",
     "YTSHORT_MEDIA_RETENTION_DAYS",
+    # Was missing: a real key here would send test files to VirusTotal.
+    "VIRUSTOTAL_API_KEY",
+    # A real connection string here would ship test telemetry to production.
+    "APPLICATIONINSIGHTS_CONNECTION_STRING",
+    "YTSHORT_TELEMETRY_ENABLED",
+    "YTSHORT_SERVICE_NAME",
+    "YTSHORT_SERVICE_VERSION",
+    "YTSHORT_ENVIRONMENT",
+    "CONTAINER_APP_JOB_EXECUTION_NAME",
 ]
 
 

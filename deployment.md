@@ -294,11 +294,44 @@ debugging a filter graph through a container log is miserable.
     > useless error. The Key Vault credential store strips whitespace defensively,
     > but check anyway.
 
+    **Not needed: the App Insights connection string.** The foundation deployment
+    already wrote `appinsights-connection-string` into the vault, reading it with a
+    deploy-time `reference()` so it never lands in deployment history. Both
+    workloads read it through their own identities — the review app via a role
+    assignment scoped to that one secret, so it still cannot reach the Google
+    credential in the same vault.
+
 > ✅ **Verify:**
 > ```bash
 > az keyvault secret list --vault-name $KEY_VAULT_NAME --query "[].name" -o tsv
 > ```
-> Exactly four names, spelled as above.
+> The four names above plus `appinsights-connection-string`, which the foundation
+> deployment created for you.
+
+---
+
+## Phase 5b — Background music onto the share
+
+The pipeline renders over a licensed track you supply. `assets/audio/` is
+gitignored **and** dockerignored — music is not ours to redistribute — so the
+directory inside the image is always empty. In Azure the app reads
+`/data/assets/audio` on the mounted file share instead
+(`YTSHORT_AUDIO_DIR`, set in `apps.bicep`).
+
+Without this, every `compose` fails with "No licensed audio track found", the job
+retries with backoff, and after `YTSHORT_MAX_STAGE_ATTEMPTS` it dead-letters to
+`failed`.
+
+```bash
+az storage directory create --account-name $STORAGE_ACCOUNT --share-name $FILE_SHARE --name assets
+az storage directory create --account-name $STORAGE_ACCOUNT --share-name $FILE_SHARE --name assets/audio
+az storage file upload --account-name $STORAGE_ACCOUNT --share-name $FILE_SHARE \
+  --source ./calm-loop.mp3 --path assets/audio/calm-loop.mp3
+```
+
+Record the track in `assets/audio/AUDIO_LICENSES.md` and commit that. It is what
+`docs/youtube-audit.md` tells Google is authoritative for audio licensing, and
+`ytshort doctor` now warns about any track missing a row.
 
 ---
 
@@ -457,6 +490,24 @@ can approve YouTube uploads**. Phases 7 and 9 exist to close that window.
     | project TimeGenerated, p.correlation_id, p.stage, p.message
     | order by TimeGenerated desc
     ```
+
+    The same records also reach **Application Insights** now, with `correlation_id`
+    and every `extra={...}` field as `customDimensions`, plus a span per run and
+    per stage and the `ytshort.*` metrics. Useful starting points:
+
+    ```kusto
+    // Everything one job did, across both tiers
+    traces | where customDimensions.correlation_id == "<job_id>" | order by timestamp asc
+
+    // Blocking findings -- these quarantine a job and are the alert-worthy ones
+    traces | where severityLevel >= 3 and customDimensions.event == "finding"
+
+    // Which approval started which job execution
+    traces | where customDimensions.event == "job_trigger.requested"
+    ```
+
+    Cloud role name distinguishes the two workloads: `ytshort-job` and
+    `ytshort-review`.
 
 32. Mail the watched account a photo. After the next tick (or another
     `job start`), it should reach `awaiting_review`. Open the review URL, sign

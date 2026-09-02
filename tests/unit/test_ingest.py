@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from ytshort.contracts.models import JobState, Severity, make_job_id
+from ytshort.integrations.ffmpeg import FFmpeg, FFmpegNotAvailable
 from ytshort.pipeline.runner import PipelineRunner
 from ytshort.pipeline.signals import HaltPipeline, RetryableFailure
 from ytshort.stages.ingest import IngestStage, discover_jobs
@@ -185,3 +186,101 @@ class TestIngestStage:
         gmail.add_message("m1", files={"pic.png": png_bytes})
         job = self._run(ctx)
         assert job.job_id == make_job_id("m1")
+
+
+class TestPosterFrameFallback:
+    """A video-only email used to halt at the thumbnail stage.
+
+    The PRD accepts "Images and/or a video", so a video on its own has to work.
+    The frame is derived here, during ingest, so that screening still sees it.
+    """
+
+    def _job(self, ctx):
+        return discover_jobs(ctx)[0]
+
+    def test_a_video_only_email_gets_a_derived_image(
+        self, ctx, gmail, monkeypatch, tmp_path
+    ) -> None:
+        gmail.add_message("m1", subject="Clip", files={"clip.mp4": b"\x00\x00\x00\x20ftypmp42"})
+        job = self._job(ctx)
+
+        def fake_extract(self, video, out, *, at_seconds=None):
+            out.write_bytes(b"\xff\xd8\xff\xe0 jpeg-ish")
+
+        monkeypatch.setattr(FFmpeg, "extract_frame", fake_extract)
+        IngestStage().run(job, ctx)
+
+        images = [a for a in job.media_attachments if a.kind == "image"]
+        assert len(images) == 1
+        assert images[0].stored_path == "clip_poster.jpg"
+        assert images[0].sha256
+        assert job.media.primary_image == "clip_poster.jpg"
+        assert job.media.primary_video == "clip.mp4"
+
+    def test_the_derivation_is_recorded_as_a_finding(
+        self, ctx, gmail, monkeypatch
+    ) -> None:
+        # The reviewer is approving a still they never sent; they should see that.
+        gmail.add_message("m1", files={"clip.mp4": b"\x00\x00\x00\x20ftypmp42"})
+        job = self._job(ctx)
+        monkeypatch.setattr(
+            FFmpeg, "extract_frame", lambda self, v, o, **kw: o.write_bytes(b"\xff\xd8\xff")
+        )
+
+        IngestStage().run(job, ctx)
+
+        kinds = [f.kind for f in job.findings]
+        assert "media.poster_frame_derived" in kinds
+
+    def test_the_derived_frame_is_screened_like_any_other_image(
+        self, ctx, gmail, monkeypatch
+    ) -> None:
+        """The reason this lives in ingest rather than in the thumbnail stage.
+
+        Ingest runs before safety and pii, so the frame goes through moderation and
+        OCR. Deriving it later would publish an unscreened still while
+        ``pii.not_screened`` still claimed video frames were never examined.
+        """
+        gmail.add_message("m1", files={"clip.mp4": b"\x00\x00\x00\x20ftypmp42"})
+        job = self._job(ctx)
+        monkeypatch.setattr(
+            FFmpeg, "extract_frame", lambda self, v, o, **kw: o.write_bytes(b"\xff\xd8\xff")
+        )
+
+        IngestStage().run(job, ctx)
+        derived = next(a for a in job.media_attachments if a.kind == "image")
+
+        # It is a normal accepted image attachment on the record, which is exactly
+        # what SafetyStage and PiiStage iterate over.
+        assert derived.is_media
+        assert derived.accepted
+        assert derived.stored_path is not None
+
+    def test_an_email_with_an_image_derives_nothing(self, ctx, gmail, png_bytes) -> None:
+        gmail.add_message(
+            "m1", files={"pic.png": png_bytes, "clip.mp4": b"\x00\x00\x00\x20ftypmp42"}
+        )
+        job = self._job(ctx)
+
+        IngestStage().run(job, ctx)
+
+        assert [f.kind for f in job.findings if "poster_frame" in f.kind] == []
+        assert job.media.primary_image == "pic.png"
+
+    def test_a_failed_extraction_falls_back_to_the_old_behaviour(
+        self, ctx, gmail, monkeypatch
+    ) -> None:
+        # ffmpeg missing, or the video unreadable. Ingest must not start failing --
+        # the thumbnail stage still halts, exactly as it did before.
+        gmail.add_message("m1", files={"clip.mp4": b"\x00\x00\x00\x20ftypmp42"})
+        job = self._job(ctx)
+
+        def explode(self, video, out, *, at_seconds=None):
+            raise FFmpegNotAvailable("ffmpeg is not installed")
+
+        monkeypatch.setattr(FFmpeg, "extract_frame", explode)
+        IngestStage().run(job, ctx)  # does not raise
+
+        assert job.media.primary_image is None
+        finding = next(f for f in job.findings if f.kind == "media.poster_frame_failed")
+        assert finding.severity is Severity.warn

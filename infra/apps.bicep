@@ -93,6 +93,9 @@ param malwareScanner string = 'virustotal'
 @description('Set true once a virustotal-api-key secret exists in Key Vault. The Job reads it via its managed identity.')
 param virusTotalSecretConfigured bool = false
 
+@description('Key Vault secret holding the App Insights connection string, from the foundation deployment. A secret *name* is not a secret.')
+param appInsightsSecretName string = 'appinsights-connection-string'
+
 @description('Extra tags merged over the defaults.')
 param tags object = {}
 
@@ -125,8 +128,17 @@ var keyVaultSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6'
 // from Key Vault by the app itself at run time.
 var commonEnv = [
   { name: 'YTSHORT_DATA_DIR', value: '${dataMountPath}/var' }
+  // On the mounted share, not in the image: assets/audio is gitignored and
+  // .dockerignored (music is not ours to redistribute), so the in-image directory
+  // is always empty. Pointing at the image would make every compose fail with
+  // "No licensed audio track found" on every scheduled run, forever. Drop a
+  // licensed track here -- deployment.md covers it.
+  { name: 'YTSHORT_AUDIO_DIR', value: '${dataMountPath}/assets/audio' }
   { name: 'YTSHORT_LOG_FORMAT', value: 'json' }
   { name: 'YTSHORT_LOG_TO_FILE', value: 'false' }
+  { name: 'YTSHORT_ENVIRONMENT', value: environment }
+  { name: 'YTSHORT_SERVICE_VERSION', value: imageTag }
+  { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', secretRef: 'appinsights-connection-string' }
   { name: 'YTSHORT_ALLOWED_SENDERS', value: allowedSenders }
   { name: 'YTSHORT_EMAIL_RECIPIENTS', value: emailRecipients }
   { name: 'YTSHORT_SINKS', value: sinks }
@@ -146,17 +158,29 @@ var jobEnv = concat(commonEnv, [
   { name: 'YTSHORT_CREDENTIAL_STORE', value: 'keyvault' }
   { name: 'YTSHORT_KEY_VAULT_URI', value: keyVaultUri }
   { name: 'AZURE_CLIENT_ID', value: jobIdentityClientId }
+  // Distinct per workload so App Insights can tell the two cloud roles apart.
+  { name: 'YTSHORT_SERVICE_NAME', value: 'ytshort-job' }
 ], virusTotalSecretConfigured ? [
   { name: 'VIRUSTOTAL_API_KEY', secretRef: 'virustotal-api-key' }
 ] : [])
 
-var jobSecrets = virusTotalSecretConfigured ? [
+// The App Insights secret is unconditional: the foundation deployment always
+// creates it, and both workloads always export telemetry.
+var telemetrySecret = [
+  {
+    name: 'appinsights-connection-string'
+    keyVaultUrl: '${keyVaultUri}secrets/${appInsightsSecretName}'
+    identity: jobIdentityResourceId
+  }
+]
+
+var jobSecrets = concat(telemetrySecret, virusTotalSecretConfigured ? [
   {
     name: 'virustotal-api-key'
     keyVaultUrl: '${keyVaultUri}secrets/virustotal-api-key'
     identity: jobIdentityResourceId
   }
-] : []
+] : [])
 
 // The review app gets no credential store configuration at all. It cannot read
 // the vault, and it does not need to: it records decisions and starts the Job.
@@ -170,6 +194,7 @@ var reviewEnv = concat(commonEnv, [
   { name: 'YTSHORT_AZURE_JOB_NAME', value: names.ingestJob }
   { name: 'AZURE_CLIENT_ID', value: reviewIdentityClientId }
   { name: 'YTSHORT_CSRF_SECRET', secretRef: 'csrf-secret' }
+  { name: 'YTSHORT_SERVICE_NAME', value: 'ytshort-review' }
 ])
 
 var dataVolume = [
@@ -267,6 +292,9 @@ module pruneJob 'br/avm:res/app/job:0.7.2' = {
         identity: jobIdentityResourceId
       }
     ]
+    // commonEnv carries the telemetry secretRef, so every workload that uses it
+    // must declare the secret -- including this one.
+    secrets: telemetrySecret
     volumes: dataVolume
     containers: [
       {
@@ -323,6 +351,11 @@ module reviewApp 'br/avm:res/app/container-app:0.23.0' = {
         keyVaultUrl: '${keyVaultUri}secrets/csrf-secret'
         identity: reviewIdentityResourceId
       }
+      {
+        name: 'appinsights-connection-string'
+        keyVaultUrl: '${keyVaultUri}secrets/${appInsightsSecretName}'
+        identity: reviewIdentityResourceId
+      }
     ]
     volumes: dataVolume
     containers: [
@@ -373,6 +406,29 @@ resource csrfSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' existing = {
 resource reviewCsrfSecretAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: csrfSecret
   name: guid(csrfSecret.id, reviewIdentityPrincipalId, keyVaultSecretsUserRoleId)
+  properties: {
+    roleDefinitionId: subscriptionResourceId(
+      'Microsoft.Authorization/roleDefinitions',
+      keyVaultSecretsUserRoleId
+    )
+    principalId: reviewIdentityPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// Telemetry from the review tier matters most -- it is the only internet-facing
+// component and the only place a human decides to publish. Granting it is still
+// least-privilege because this, like the CSRF grant above, is scoped to a single
+// secret: the review identity ends with two per-secret grants and no role over
+// the vault, so the Google credential in the same vault stays out of reach.
+resource appInsightsSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' existing = {
+  parent: keyVault
+  name: appInsightsSecretName
+}
+
+resource reviewAppInsightsSecretAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: appInsightsSecret
+  name: guid(appInsightsSecret.id, reviewIdentityPrincipalId, keyVaultSecretsUserRoleId)
   properties: {
     roleDefinitionId: subscriptionResourceId(
       'Microsoft.Authorization/roleDefinitions',

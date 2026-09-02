@@ -184,3 +184,24 @@ class FakeModerator:
             detail=self.detail,
             skipped=self.skipped,
         )
+
+
+@dataclass
+class RecordingInstrument:
+    """Stands in for a ccol metric instrument and remembers what was measured.
+
+    The real instrument is a no-op unless telemetry is configured, so asserting on
+    emitted metrics means substituting this for the accessor in
+    ``ytshort.observability.instruments``.
+    """
+
+    points: list[tuple[float, dict]] = field(default_factory=list)
+
+    def add(self, value: int | float, attributes: dict | None = None) -> None:
+        self.points.append((value, attributes or {}))
+
+    def record(self, value: int | float, attributes: dict | None = None) -> None:
+        self.add(value, attributes)
+
+    def attributes_for(self, key: str) -> list:
+        return [attrs.get(key) for _, attrs in self.points]

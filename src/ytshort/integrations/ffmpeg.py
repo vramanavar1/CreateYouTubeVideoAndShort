@@ -151,3 +151,28 @@ class FFmpeg:
                 extra={"description": description, "command": " ".join(command)},
             )
             raise FFmpegError(f"{description} failed: {completed.stderr.strip()[:2000]}")
+
+    def extract_frame(self, video: Path, out: Path, *, at_seconds: float | None = None) -> None:
+        """Grab a single still from ``video`` into ``out``.
+
+        ``at_seconds`` defaults to a tenth of the way in rather than frame zero:
+        openings are very often black, a fade-in, or a title card, none of which
+        make a usable thumbnail.
+        """
+        if at_seconds is None:
+            duration = self.probe(video).duration_seconds
+            at_seconds = max(duration * 0.1, 0.0)
+
+        self.run(
+            [
+                # Before -i, so ffmpeg seeks rather than decoding up to the point.
+                "-ss",
+                f"{at_seconds:.3f}",
+                "-i",
+                str(video),
+                "-frames:v",
+                "1",
+                str(out),
+            ],
+            description=f"poster frame from {video.name}",
+        )

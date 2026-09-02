@@ -101,7 +101,8 @@ cp .env.example .env          # then edit
 
 At minimum set `YTSHORT_ALLOWED_SENDERS` — the app refuses to start without it —
 and drop a licensed track into `assets/audio/` (see
-[AUDIO_LICENSES.md](assets/audio/AUDIO_LICENSES.md)).
+[AUDIO_LICENSES.md](assets/audio/AUDIO_LICENSES.md); thumbnail font licensing is
+in [assets/fonts/README.md](assets/fonts/README.md)).
 
 ```bash
 uv run ytshort doctor         # checks ffmpeg, credentials, audio, storage
@@ -192,6 +193,11 @@ approve-anything button.
 | Shorts format | Vertical 1080×1920, ≤180 s, `#Shorts` in the description. Longer renders are trimmed at compose time. |
 | No YouTube audio download | Background music comes from `assets/audio/`. Downloading audio from YouTube breaks its Terms of Service, so the pipeline cannot do it. |
 | WhatsApp group sink | Not implemented. Neither the WhatsApp Cloud API nor Twilio can post to a *group* — a future version needs a share link or an automation-platform hop. |
+| No third-party URL shortener | The "short url" is YouTube's own canonical `youtu.be/<id>`, which already exists and needs no account, API key or extra service on the publish path. The `Shortener` protocol in `stages/shorten.py` is the seam if a branded domain is ever wanted. |
+| Background audio is operator-supplied | `assets/audio/` ships empty by design — music is not ours to redistribute. Until a licensed track is dropped in, `compose` fails retryably. In Azure the directory is on the mounted share, not in the image. |
+
+Every deviation from [prd.md](prd.md), and what would make us revisit it, is
+recorded in [docs/decisions.md](docs/decisions.md).
 
 ---
 

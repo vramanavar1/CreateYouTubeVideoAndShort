@@ -1,0 +1,20 @@
+[project]
+name = "ccol"
+version = "0.1.0"
+description = "Cross-cutting observability layer: correlation, severity, metrics and spans, with optional Azure Monitor export"
+readme = "README.md"
+requires-python = ">=3.12"
+# Deliberately empty. A project adopting ccol takes on no transitive dependencies
+# unless it also asks for the azure extra -- that is what makes it safe to depend
+# on unconditionally, and what keeps an offline test suite offline.
+dependencies = []
+
+[project.optional-dependencies]
+azure = ["azure-monitor-opentelemetry>=1.6"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ccol"]

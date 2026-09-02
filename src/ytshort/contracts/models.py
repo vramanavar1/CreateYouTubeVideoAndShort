@@ -7,7 +7,9 @@ says exactly how far a job got and why it stopped there.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+from collections.abc import Callable
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal
@@ -79,6 +81,27 @@ class Finding(BaseModel):
     detected_at: datetime = Field(default_factory=utcnow)
 
 
+#: Notified whenever a finding is recorded. This exists so the observability layer
+#: can emit every finding -- including the ``*.not_screened`` ones that record a
+#: layer which could not run -- without this module importing telemetry. The
+#: contracts layer stays pure; ``observability.setup`` registers the observer.
+FindingObserver = Callable[["Job", "Finding"], None]
+
+_observers: list[FindingObserver] = []
+
+
+def observe_findings(observer: FindingObserver) -> None:
+    _observers.append(observer)
+
+
+def _notify_observers(job: Job, finding: Finding) -> None:
+    for observe in _observers:
+        # An observer that raises must never lose the finding or fail the job.
+        # The append has already happened, so the record is authoritative either way.
+        with contextlib.suppress(Exception):
+            observe(job, finding)
+
+
 class Attachment(BaseModel):
     attachment_id: str
     filename: str
@@ -148,6 +171,12 @@ class StageRecord(BaseModel):
     completed_at: datetime | None = None
     duration_ms: int | None = None
     detail: str = ""
+    #: How many times this stage has been attempted. Only ever advanced by a
+    #: retryable failure -- a stage that succeeds first time reports 1.
+    attempts: int = 0
+    #: Set after a retryable failure. The runner will not re-enter the stage before
+    #: this, which is what turns "retried on every scheduled tick" into backoff.
+    retry_not_before: datetime | None = None
 
 
 class Job(BaseModel):
@@ -175,6 +204,7 @@ class Job(BaseModel):
     # -- helpers -----------------------------------------------------------
     def add_finding(self, finding: Finding) -> Finding:
         self.findings.append(finding)
+        _notify_observers(self, finding)
         return finding
 
     @property

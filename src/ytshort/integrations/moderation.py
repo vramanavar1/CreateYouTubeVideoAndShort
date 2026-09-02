@@ -20,6 +20,11 @@ from ytshort.observability.logging import get_logger
 
 log = get_logger(__name__)
 
+#: A hung moderation call stalls the screening stage and holds the job lock, so
+#: neither of these is left to the SDK's defaults.
+_REQUEST_TIMEOUT_SECONDS = 120.0
+_MAX_RETRIES = 2
+
 #: What we ask the model to look for. Keep this list stable -- it is echoed into
 #: findings and therefore into the reviewer's screen.
 CATEGORIES = (
@@ -134,7 +139,15 @@ class ClaudeModerator:
                 skipped=True,
             )
 
-        client = anthropic.Anthropic(api_key=self._api_key)
+        # Explicit rather than relying on SDK defaults: this call sits inside the
+        # screening stage, so a hung request would stall the pipeline and hold the
+        # job lock. Two retries covers a blip; beyond that the stage's own bounded
+        # retry takes over, and a failure here is a warn finding, not a block.
+        client = anthropic.Anthropic(
+            api_key=self._api_key,
+            timeout=_REQUEST_TIMEOUT_SECONDS,
+            max_retries=_MAX_RETRIES,
+        )
         encoded = base64.standard_b64encode(path.read_bytes()).decode("utf-8")
 
         try:

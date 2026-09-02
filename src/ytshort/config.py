@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Literal
 
@@ -42,6 +43,9 @@ GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
     "https://www.googleapis.com/auth/youtube.force-ssl",
 ]
+
+#: Container formats the audio selector accepts.
+AUDIO_EXTENSIONS = frozenset({".mp3", ".m4a", ".wav", ".aac", ".ogg", ".flac"})
 
 PrivacyStatus = Literal["private", "unlisted", "public"]
 PiiPolicy = Literal["warn", "block"]
@@ -82,6 +86,20 @@ def _env_float(name: str, default: float, problems: list[str]) -> float:
 def _env_list(name: str) -> list[str]:
     raw = _env(name)
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _module_available(name: str) -> bool:
+    """Is an optional dependency importable, without importing it?
+
+    ``find_spec`` imports parent packages on the way down, so a missing parent
+    raises instead of returning None -- asking for "azure.monitor.opentelemetry"
+    on an install without the azure extra would otherwise take out
+    ``ytshort doctor``, which is the one command you run when things are broken.
+    """
+    try:
+        return find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
 
 
 def _resolve(value: str, default: str) -> Path:
@@ -151,6 +169,26 @@ class Settings:
     log_format: str
     log_to_file: bool
     media_retention_days: int
+
+    # -- Retry policy ------------------------------------------------------
+    #: A stage that keeps failing is dead-lettered rather than retried forever.
+    #: Unbounded retries are a self-inflicted DoS against YouTube, Anthropic and
+    #: VirusTotal, and a cost-amplification path a hostile attachment can trigger.
+    max_stage_attempts: int
+    retry_base_seconds: float
+    retry_max_seconds: float
+
+    # -- Observability (CCOL) ----------------------------------------------
+    # An empty connection string is the whole degradation switch: no exporter is
+    # created and no telemetry package is imported.
+    otel_connection_string: str
+    otel_enabled: bool
+    service_name: str
+    service_version: str
+    environment_name: str
+    #: Injected by Container Apps into every job replica. Logged so an approval in
+    #: the review app can be joined to the job execution it triggered.
+    job_execution_name: str
 
     # Media type allow-list. Anything not listed here is rejected at ingest --
     # an allow-list, never a block-list, because the block-list is unbounded.
@@ -327,6 +365,19 @@ class Settings:
             log_to_file=_env("YTSHORT_LOG_TO_FILE", "true").lower()
             in ("1", "true", "yes"),
             media_retention_days=_env_int("YTSHORT_MEDIA_RETENTION_DAYS", 30, problems),
+            max_stage_attempts=_env_int("YTSHORT_MAX_STAGE_ATTEMPTS", 5, problems),
+            retry_base_seconds=_env_float("YTSHORT_RETRY_BASE_SECONDS", 30.0, problems),
+            retry_max_seconds=_env_float("YTSHORT_RETRY_MAX_SECONDS", 3600.0, problems),
+            # Azure's own conventional variable name, so the Bicep env var and every
+            # Azure tool agree. Read here like everything else -- no module reads
+            # os.environ directly.
+            otel_connection_string=_env("APPLICATIONINSIGHTS_CONNECTION_STRING"),
+            otel_enabled=_env("YTSHORT_TELEMETRY_ENABLED", "true").lower()
+            in ("1", "true", "yes"),
+            service_name=_env("YTSHORT_SERVICE_NAME", "ytshort"),
+            service_version=_env("YTSHORT_SERVICE_VERSION"),
+            environment_name=_env("YTSHORT_ENVIRONMENT", "local"),
+            job_execution_name=_env("CONTAINER_APP_JOB_EXECUTION_NAME"),
         )
 
         if strict and problems:
@@ -348,17 +399,62 @@ class Settings:
             )
         if not self.audio_dir.exists():
             problems.append(f"Audio directory not found at {self.audio_dir}")
-        elif not any(
-            p.suffix.lower() in {".mp3", ".m4a", ".wav", ".aac", ".ogg"}
-            for p in self.audio_dir.iterdir()
-            if p.is_file()
-        ):
-            problems.append(
-                f"No licensed audio track found in {self.audio_dir} "
-                "(drop an .mp3 you have the rights to use)"
-            )
+        else:
+            tracks = [
+                p
+                for p in self.audio_dir.iterdir()
+                if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS
+            ]
+            if not tracks:
+                problems.append(
+                    f"No licensed audio track found in {self.audio_dir} "
+                    "(drop an .mp3 you have the rights to use)"
+                )
+            problems.extend(self.audio_licence_problems())
         if "email" in self.sinks and not self.email_recipients:
             problems.append("email sink enabled but YTSHORT_EMAIL_RECIPIENTS is empty")
         if self.moderation_provider == "claude" and not self.anthropic_api_key:
             problems.append("moderation provider is 'claude' but ANTHROPIC_API_KEY is unset")
+        if self.telemetry_configured and not _module_available(
+            "azure.monitor.opentelemetry"
+        ):
+            problems.append(
+                "APPLICATIONINSIGHTS_CONNECTION_STRING is set but the observability "
+                "extra is not installed (uv sync --extra observability)"
+            )
         return problems
+
+    def audio_licence_problems(self) -> list[str]:
+        """Tracks with no row in the licence manifest.
+
+        docs/youtube-audit.md tells Google that AUDIO_LICENSES.md is authoritative
+        for background-music licensing, and nothing used to check that a dropped
+        file was actually recorded there. A hand-maintained table backing a claim
+        made to an auditor is worth one cheap check.
+        """
+        if not self.audio_dir.exists():
+            return []
+
+        tracks = [
+            p
+            for p in self.audio_dir.iterdir()
+            if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS
+        ]
+        manifest = self.audio_dir / "AUDIO_LICENSES.md"
+        if not manifest.exists():
+            return (
+                [f"Audio licence manifest missing at {manifest}"] if tracks else []
+            )
+
+        recorded = manifest.read_text(encoding="utf-8", errors="replace")
+        return [
+            f"{track.name} has no row in {manifest.name} -- record its source and "
+            "licence, or a copyright claim cannot be disputed"
+            for track in tracks
+            if track.name not in recorded
+        ]
+
+    @property
+    def telemetry_configured(self) -> bool:
+        """True when telemetry should export. Never logs the connection string."""
+        return self.otel_enabled and bool(self.otel_connection_string)

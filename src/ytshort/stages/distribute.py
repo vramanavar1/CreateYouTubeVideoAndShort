@@ -12,6 +12,7 @@ re-running after one sink failed retries only that one.
 from __future__ import annotations
 
 from ytshort.contracts.models import Job, JobState, SinkResult
+from ytshort.observability import instruments
 from ytshort.observability.logging import get_logger
 from ytshort.pipeline.stage import BaseStage, PipelineContext
 from ytshort.sinks.registry import build_sinks
@@ -51,6 +52,9 @@ class DistributeStage(BaseStage):
             # up one row per retry.
             job.deliveries = [d for d in job.deliveries if d.sink != sink.name]
             job.deliveries.append(result)
+            instruments.sink_deliveries().add(
+                1, {"sink": sink.name, "ok": str(result.ok).lower()}
+            )
 
         delivered = sum(1 for d in job.deliveries if d.ok)
         log.info(

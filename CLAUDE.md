@@ -33,7 +33,9 @@ Break these and something quietly stops being safe.
    goes through `safe_filename()`; everything read back goes through
    `MediaStore.resolve()`, which refuses to escape the job directory.
 7. **No module reads `os.environ` directly** — they take a `Settings`. That is
-   what keeps the tests off the developer's real inbox.
+   what keeps the tests off the developer's real inbox. `libs/ccol` holds the line
+   from the other side: it takes an `ObservabilityConfig` and cannot import
+   `ytshort`, which is what makes it reusable rather than merely extractable.
 8. **The review app must never hold a Google credential.** It is the only
    internet-facing component. It records decisions and asks the scheduled Job to
    do privileged work; it does not publish. Enforced in `web/app.py`
@@ -49,6 +51,22 @@ Break these and something quietly stops being safe.
 11. **The pipeline holds `gmail.readonly`, not `gmail.modify`.** Do not add a
     stage that labels, marks read, or otherwise writes to the mailbox — the
     narrow `GmailClientProtocol` exists to make that impossible by accident.
+12. **Telemetry never fails a job, and never loses a finding.**
+    `Job.add_finding()` appends *before* notifying observers, and observers run
+    under `suppress(Exception)`. Metric instruments are no-ops when unconfigured,
+    so no call site branches on whether telemetry is on.
+13. **Only bounded values may be metric attributes.** `finding.kind` is a closed
+    set and is safe; `finding.where` is an attacker-supplied filename and stays a
+    log field. An unbounded dimension mints unbounded time series — a billing
+    incident a hostile sender can trigger for free. Same for `job_id`.
+14. **Retries are finite.** A stage records `attempts` and `retry_not_before`;
+    past `YTSHORT_MAX_STAGE_ATTEMPTS` the job dead-letters to `failed`. Only
+    faults `is_transient()` accepts are retried at all — retrying a 403 forever is
+    a self-inflicted DoS with a bill attached. Do not reintroduce a bare
+    `except Exception: raise RetryableFailure`.
+15. **A derived poster frame is created during ingest, never later.** Stage order
+    is `ingest → safety → pii → thumbnail`; a frame made at thumbnail time would
+    publish unscreened and would falsify the `pii.not_screened` finding.
 
 ## Things that are deliberate, not oversights
 
