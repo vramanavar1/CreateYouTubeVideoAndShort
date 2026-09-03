@@ -66,18 +66,85 @@ stored in the cloud. Treat that as the design constraint it is.
 6. Go to <https://console.cloud.google.com> and create a project named
    `ytshort`, signed in **as the dedicated account**.
 
-7. Enable exactly two APIs — no more:
+   Note the **project ID** Google assigns, shown under the name. If `ytshort` was
+   already taken it will be something like `ytshort-479214`, and the ID — not the
+   display name — is what every command below wants.
+
+7. Enable exactly two APIs — no more.
+
+   **Console (easiest).** Open each link and click **ENABLE**:
+
+   - <https://console.cloud.google.com/apis/library/gmail.googleapis.com>
+   - <https://console.cloud.google.com/apis/library/youtube.googleapis.com>
+
+   > **Check the project picker in the top bar before you click.** It sits beside
+   > "Google Cloud" in the header. If it does not name your project, you will
+   > enable the APIs somewhere else and every later step fails with a confusing
+   > permission error.
+
+   To navigate by hand instead: ☰ menu → **APIs & Services** → **Library** →
+   search the API name → click the result → **ENABLE**. (The menu item is
+   *Library*; there is no "Enable APIs" entry.)
+
+   **Or with gcloud**, using the project **ID** from step 6:
 
    ```bash
-   gcloud config set project ytshort
+   gcloud projects list                      # find the ID if you did not note it
+   gcloud config set project <your-project-id>
    gcloud services enable gmail.googleapis.com youtube.googleapis.com
    ```
 
-   Or via the console: *APIs & Services → Enable APIs* → "Gmail API" and
-   "YouTube Data API v3".
+> **Order matters, and it is not the obvious one.** Steps 8 and 9 configure the
+> *app's* consent; step 10 creates a client. **Scopes belong to the app, not to
+> the client** — one project can have several clients sharing one scope set — so
+> do not go looking for a scopes field while creating the client. There isn't one.
+>
+> The old *APIs & Services → OAuth consent screen* page has been replaced by
+> **Google Auth Platform** (☰ menu), split into **Branding**, **Audience**,
+> **Clients** and **Data Access**. On a brand-new project it opens a *Get started*
+> wizard that walks Branding and Audience for you.
 
-8. **OAuth consent screen** — *APIs & Services → OAuth consent screen*,
-   User type **External**. Add exactly these four scopes:
+8. **Configure the consent screen** — ☰ → **Google Auth Platform**:
+
+   **On a fresh project you will see a `GET STARTED` button** rather than the
+   pages below — Google runs a one-time wizard: **App Information → Audience →
+   Contact Information → Finish**. It asks for exactly the mandatory fields listed
+   here, and the *"I agree to the Google API Services: User Data Policy"*
+   checkbox lives on its **Finish** screen, immediately before **CREATE**. That
+   checkbox appears **only** in the wizard — it is not on any page afterwards.
+
+   Once the wizard has run, these pages are how you edit things:
+
+   1. **Branding** — **three mandatory fields.** Data Access and Clients stay
+      locked until they are filled, and the error you get (*"Your app's OAuth
+      configuration is incomplete… visit the Branding page"*) names the page
+      without saying which field is missing.
+
+      | Field | Note |
+      |---|---|
+      | **App name** | `ytshort` is fine. Avoid anything confusable with a Google product name. |
+      | **User support email** | A dropdown — it only offers your own account address or a Google Group you own. |
+      | **Developer contact information → Email addresses** | Where Google sends project notices. Your own address is fine. |
+
+      The first two sit at the top of the page. **Developer contact information is
+      near the bottom**, below App Domain and Authorized Domains — so it is the
+      one people scroll past while skipping those optional sections, and it is the
+      usual reason the incomplete-configuration error persists.
+
+      **App logo is optional and always will be.** **App domain and Authorized
+      domains are optional right now, but step 9 will not publish without them** —
+      Google requires a home page, privacy policy and terms of service for every
+      external app in production. Sub-step 4 below sets those up; you can either
+      do it now or come back when step 9 stops you.
+
+   2. **Audience** — User type **External**.
+
+      Not really a choice: Internal apps skip verification entirely, but Internal
+      requires a Google Workspace organisation, and phase 0 deliberately uses a
+      standalone consumer account. External-and-unverified is the intended end
+      state — step 9 explains the interstitial that results.
+
+   3. **Data Access** → **Add or Remove Scopes** → add exactly these four:
 
    | Scope | Why |
    |---|---|
@@ -86,6 +153,40 @@ stored in the cloud. Treat that as the design constraint it is.
    | `.../auth/youtube.upload` | `videos.insert`, `thumbnails.set` |
    | `.../auth/youtube.force-ssl` | `videos.update`, to promote private uploads after the audit |
 
+   The scope picker lists hundreds; filter by typing `gmail.readonly`,
+   `gmail.send`, `youtube.upload` and `youtube.force-ssl` in turn, tick each, then
+   **Update** and **Save**.
+
+   4. **Host the three policy pages, then fill App domain.** Publishing in step 9
+      requires a home page, privacy policy and terms of service on a domain you
+      control. This repository already carries them — `docs/index.md`,
+      `docs/privacy.md`, `docs/terms.md` — so GitHub Pages serves them for free:
+
+      On GitHub: **Settings → Pages → Source: Deploy from a branch →
+      `main` / `/docs` → Save.** Wait a minute or two for the first build, then
+      confirm all three URLs load in a browser **before** returning to the console.
+
+      | Branding field | Value for this deployment |
+      |---|---|
+      | Application home page | `https://vramanavar1.github.io/CreateYouTubeVideoAndShort/` |
+      | Privacy policy link | `https://vramanavar1.github.io/CreateYouTubeVideoAndShort/privacy/` |
+      | Terms of service link | `https://vramanavar1.github.io/CreateYouTubeVideoAndShort/terms/` |
+      | Authorized domains | `vramanavar1.github.io` |
+
+      For a different fork the pattern is `https://<user>.github.io/<repo>/`, with
+      `<user>.github.io` as the authorized domain. **Add the authorized domain
+      before the three URLs** — Google validates the URLs against it.
+
+      **Read `docs/privacy.md` before you publish it.** It describes what this
+      pipeline actually does with mail and media, and it has to stay true: it is
+      the public counterpart of the claims `docs/youtube-audit.md` makes to Google.
+      If you disable a feature or change retention, change that page too.
+
+      > If Google rejects the authorized domain or asks you to prove ownership,
+      > verify it in [Google Search Console](https://search.google.com/search-console)
+      > — you control the repository, so drop the verification HTML file into
+      > `docs/` and retry.
+
    `gmail.modify` is deliberately **not** requested — it grants write over the
    whole mailbox, and the pipeline does not need it.
 
@@ -93,23 +194,39 @@ stored in the cloud. Treat that as the design constraint it is.
    clears. Adding a scope later means re-consenting and re-rotating the stored
    credential.
 
-9. **Publish the app** — set the publishing status to *In production*.
+9. **Publish the app** — **Google Auth Platform → Audience → Publishing status →
+   PUBLISH APP**, so it reads *In production*.
 
    It will remain **unverified**, so you will see a "Google hasn't verified this
    app" interstitial when you consent. That is expected and fine for the owner
    account: click *Advanced → Go to ytshort (unsafe)*.
 
-   > This step is not cosmetic. While the consent screen is in **Testing**,
-   > Google expires refresh tokens after **7 days**. The hourly job would work
-   > for a week and then start failing with an opaque `invalid_grant`, at
-   > 3am, silently. Publishing is what prevents that.
+   > This step is not cosmetic, and it is why step 8 sub-step 4 exists. Google's
+   > OAuth documentation: *"A Google Cloud Platform project with an OAuth consent
+   > screen configured for an external user type and a publishing status of
+   > 'Testing' is issued a refresh token expiring in 7 days, unless the only OAuth
+   > scopes requested are a subset of name, email address, and user profile."*
+   >
+   > This project's four scopes are well outside that carve-out. Left in Testing,
+   > the hourly job works for a week and then fails with an opaque `invalid_grant`,
+   > at 3am, silently. Publishing is what prevents that.
 
-10. **Credentials → Create credentials → OAuth client ID → Desktop app.**
+10. **Create the OAuth client** — **Google Auth Platform → Clients → CREATE
+    CLIENT** → Application type **Desktop app**. (The older
+    *APIs & Services → Credentials → Create credentials → OAuth client ID* route
+    still works and lists the same client.)
+
+    **Desktop app** is correct even though the pipeline ends up in a container:
+    the consent flow in step 15 runs a local browser redirect on your machine, and
+    only the resulting refresh token travels to Azure.
+
     Download the JSON and save it **outside this repository**, e.g.
     `C:\secrets\ytshort\client_secret.json`.
 
-> ✅ **Verify:** *APIs & Services → Enabled APIs* lists exactly Gmail API and
-> YouTube Data API v3. The consent screen says *In production*.
+> ✅ **Verify:** *APIs & Services → Enabled APIs & services* lists Gmail API and
+> YouTube Data API v3. On **Google Auth Platform**: *Data Access* shows the four
+> scopes, *Audience* reads **In production**, and *Clients* lists one Desktop
+> client. Step 15 is what proves all three were configured together.
 
 ---
 

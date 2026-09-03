@@ -1,0 +1,18 @@
+# GitHub Pages config. This site exists for one reason: Google requires an
+# external OAuth app in production to publish a home page, a privacy policy and
+# terms of service. Those three pages are the whole site.
+#
+# Only files with YAML front matter are rendered by Jekyll. The other documents
+# in this folder (security.md, decisions.md, youtube-audit.md) deliberately have
+# none, so they are served as-is rather than dressed up as web pages.
+title: ytshort
+description: >-
+  A personal, single-operator pipeline that turns emailed photos into YouTube
+  Shorts, with a human approving every upload.
+theme: jekyll-theme-minimal
+
+# Keep the repository's own working documents out of the rendered site.
+exclude:
+  - security.md
+  - decisions.md
+  - youtube-audit.md
