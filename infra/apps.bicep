@@ -96,6 +96,15 @@ param virusTotalSecretConfigured bool = false
 @description('Key Vault secret holding the App Insights connection string, from the foundation deployment. A secret *name* is not a secret.')
 param appInsightsSecretName string = 'appinsights-connection-string'
 
+@description('Resource group holding the Foundry (Azure OpenAI) account. Empty disables thumbnail art direction entirely.')
+param foundryResourceGroup string = ''
+
+@description('Name of the Foundry account. Its endpoint and deployment are derived from this.')
+param foundryAccountName string = ''
+
+@description('Deployment name to call. This is the deployment, not the model -- a mismatch returns 404 on a valid endpoint.')
+param foundryDeployment string = 'gpt-4o-mini'
+
 @description('Extra tags merged over the defaults.')
 param tags object = {}
 
@@ -122,6 +131,11 @@ var dataMountPath = '/data'
 var keyVaultUri = 'https://${keyVaultName}${az.environment().suffixes.keyvaultDns}/'
 
 var keyVaultSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6'
+
+// Art direction needs both halves: something to call, and somewhere to grant the
+// role. Either missing and the job falls back to the email subject, which is
+// exactly what it did before this feature existed.
+var artDirectorEnabled = !empty(foundryResourceGroup) && !empty(foundryAccountName)
 
 // Configuration shared by every container. Deliberately contains no secrets --
 // those arrive as Container Apps secrets or, for the Google credential, are read
@@ -160,7 +174,16 @@ var jobEnv = concat(commonEnv, [
   { name: 'AZURE_CLIENT_ID', value: jobIdentityClientId }
   // Distinct per workload so App Insights can tell the two cloud roles apart.
   { name: 'YTSHORT_SERVICE_NAME', value: 'ytshort-job' }
-], virusTotalSecretConfigured ? [
+], artDirectorEnabled ? [
+  // Thumbnail art direction. No key: the job authenticates to Foundry with the
+  // same managed identity it already uses for Key Vault, so there is no secret
+  // here to store or rotate.
+  { name: 'YTSHORT_ART_DIRECTOR', value: 'foundry' }
+  // The resource base only -- the AzureOpenAI client appends the route and the
+  // api-version itself. A trailing /openai/v1/ here produces a 404.
+  { name: 'YTSHORT_FOUNDRY_ENDPOINT', value: 'https://${foundryAccountName}.openai.azure.com' }
+  { name: 'YTSHORT_FOUNDRY_DEPLOYMENT', value: foundryDeployment }
+] : [], virusTotalSecretConfigured ? [
   { name: 'VIRUSTOTAL_API_KEY', secretRef: 'virustotal-api-key' }
 ] : [])
 
@@ -319,6 +342,13 @@ module pruneJob 'br/avm:res/app/job:0.7.2' = {
 
 module reviewApp 'br/avm:res/app/container-app:0.23.0' = {
   name: 'review-app'
+  // Container Apps resolves keyVaultUrl secret references when it creates the
+  // revision. Without this, ARM starts the app and its two per-secret grants in
+  // parallel and the revision can be provisioned before either exists -- which
+  // fails, then succeeds on a re-run, which is the worst way to find a race.
+  // (Entra RBAC also takes a moment to propagate after the assignment lands, so
+  // this narrows the window rather than closing it completely.)
+  dependsOn: [reviewCsrfSecretAccess, reviewAppInsightsSecretAccess]
   params: {
     name: names.reviewApp
     location: location
@@ -436,6 +466,29 @@ resource reviewAppInsightsSecretAccess 'Microsoft.Authorization/roleAssignments@
     )
     principalId: reviewIdentityPrincipalId
     principalType: 'ServicePrincipal'
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Foundry access for the Job identity -- a role assignment, not a secret
+// ---------------------------------------------------------------------------
+
+// The Job identity's *principal* id is not passed in: foundation.bicep outputs
+// one only for the review identity. Rather than thread a new output, parameter
+// and runbook export through three files, look it up -- foundation.bicep creates
+// this identity in the same resource group, so the name resolves here.
+resource jobIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = {
+  name: last(split(jobIdentityResourceId, '/'))
+}
+
+// Deployed at the Foundry account's scope, which is in a different resource
+// group -- a module is the only way to change scope mid-deployment.
+module foundryAccess 'modules/foundry-access.bicep' = if (artDirectorEnabled) {
+  name: 'foundry-access'
+  scope: resourceGroup(foundryResourceGroup)
+  params: {
+    accountName: foundryAccountName
+    principalId: jobIdentity.properties.principalId
   }
 }
 

@@ -17,6 +17,7 @@ from ytshort.storage.job_store import JobStore
 from ytshort.storage.media_store import MediaStore
 
 if TYPE_CHECKING:  # imported lazily to keep the pipeline core free of API deps
+    from ytshort.integrations.art_director import ArtDirector
     from ytshort.integrations.gmail_client import GmailClientProtocol
     from ytshort.integrations.moderation import ImageModerator
     from ytshort.integrations.scanner import ScanProvider
@@ -32,6 +33,7 @@ class PipelineContext:
     youtube: YouTubeClientProtocol | None = None
     scanner: ScanProvider | None = None
     moderator: ImageModerator | None = None
+    art_director: ArtDirector | None = None
     # Free-form per-run scratch space; stages use it to pass along values that
     # do not belong on the persisted job record.
     scratch: dict[str, object] = field(default_factory=dict)

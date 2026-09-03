@@ -20,7 +20,12 @@ param reviewIdentityPrincipalId = readEnvironmentVariable('REVIEW_IDENTITY_PRINC
 
 // The pipeline's front door. Only mail from these addresses is processed.
 param allowedSenders = readEnvironmentVariable('ALLOWED_SENDERS')
-param emailRecipients = readEnvironmentVariable('EMAIL_RECIPIENTS', '')
+// No fallback, deliberately. `sinks` defaults to 'file,email' and the app treats
+// "email sink enabled, no recipients" as a fatal config error -- so an empty
+// fallback here produces a *successful* deployment whose containers then
+// crash-loop. Without it, forgetting the export fails the build (BCP427) before
+// anything reaches Azure, which is how every other value in this file behaves.
+param emailRecipients = readEnvironmentVariable('EMAIL_RECIPIENTS')
 
 // Hourly ingest; nightly prune.
 param cronExpression = '0 * * * *'
@@ -43,6 +48,13 @@ param mediaRetentionDays = 30
 // warning into review.
 param malwareScanner = 'virustotal'
 param virusTotalSecretConfigured = false
+
+// Thumbnail art direction. Both must be set for it to switch on; the job then
+// authenticates to Foundry with its managed identity -- there is no API key.
+// Leave empty and the thumbnail uses the email subject, as it always has.
+param foundryResourceGroup = ''
+param foundryAccountName = ''
+param foundryDeployment = 'gpt-4o-mini'
 
 param tags = {
   CostCenter: 'Personal'

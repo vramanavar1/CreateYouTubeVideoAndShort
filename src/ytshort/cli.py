@@ -438,6 +438,14 @@ def doctor() -> None:
         warn_only=True,
     )
 
+    report(
+        True,
+        f"art director: {settings.art_director} ({settings.foundry_deployment})"
+        if settings.art_director != "none"
+        else "art director: off -- the email subject is used as the thumbnail text",
+        warn_only=True,
+    )
+
     # Never prints the connection string, only whether one is wired.
     report(
         True,

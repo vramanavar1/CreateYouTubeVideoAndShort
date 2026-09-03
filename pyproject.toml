@@ -34,6 +34,10 @@ azure = ["azure-identity>=1.19", "azure-keyvault-secrets>=4.9"]
 # Ships telemetry to Application Insights. Without it the pipeline still logs
 # structured JSON to stdout and imports no telemetry package at all.
 observability = ["ccol[azure]"]
+# Thumbnail art direction against an Azure Foundry deployment. Authenticates
+# with a managed identity (azure-identity, already in the azure extra), so
+# there is no API key anywhere in this project.
+foundry = ["openai>=1.0"]
 
 [dependency-groups]
 dev = [

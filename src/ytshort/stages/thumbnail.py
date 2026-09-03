@@ -15,11 +15,13 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from functools import partial
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from ytshort.contracts.models import Finding, Job, Severity
+from ytshort.integrations.art_director import NoopArtDirector, ThumbnailDirection
 from ytshort.observability.logging import get_logger
 from ytshort.pipeline.signals import HaltPipeline
 from ytshort.pipeline.stage import BaseStage, PipelineContext
@@ -128,6 +130,51 @@ def _fit_text(
     return font, lines, line_height
 
 
+#: Trailing punctuation a model tends to attach to the word it wants emphasised.
+_EMPHASIS_STRIP = ".,!?:;\"'“”‘’…"
+
+_WHITE = (255, 255, 255)
+
+
+def _hex_to_rgb(value: str) -> tuple[int, int, int]:
+    """#RRGGBB to a tuple. Callers validate the format; this assumes it."""
+    cleaned = value.lstrip("#")
+    return (int(cleaned[0:2], 16), int(cleaned[2:4], 16), int(cleaned[4:6], 16))
+
+
+def _draw_line(
+    draw: ImageDraw.ImageDraw,
+    line: str,
+    font: ImageFont.FreeTypeFont,
+    start_x: float,
+    y: int,
+    shadow_offset: int,
+    emphasis: str,
+    accent: tuple[int, int, int],
+) -> None:
+    """Draw one line, colouring the emphasised word if it appears in it.
+
+    Always two passes -- black offset, then the fill. That drop shadow is what keeps
+    white text readable over an arbitrary photograph, and an accent colour needs it
+    at least as much as white does.
+    """
+    if not emphasis:
+        draw.text((start_x + shadow_offset, y + shadow_offset), line, font=font, fill=(0, 0, 0))
+        draw.text((start_x, y), line, font=font, fill=_WHITE)
+        return
+
+    wanted = emphasis.lower()
+    x = start_x
+    for index, word in enumerate(line.split(" ")):
+        # Keep the space attached so widths stay exact; measuring words separately
+        # and adding a space width drifts on proportional fonts.
+        token = word if index == 0 else f" {word}"
+        colour = accent if word.strip(_EMPHASIS_STRIP).lower() == wanted else _WHITE
+        draw.text((x + shadow_offset, y + shadow_offset), token, font=font, fill=(0, 0, 0))
+        draw.text((x, y), token, font=font, fill=colour)
+        x += draw.textlength(token, font=font)
+
+
 def _backdrop(source: Image.Image, size: tuple[int, int]) -> Image.Image:
     """Blurred, darkened cover-crop of the source, used to fill the letterbox."""
     target_w, target_h = size
@@ -149,7 +196,17 @@ def render_thumbnail(
     output_path: Path,
     size: tuple[int, int],
     project_root: Path,
+    *,
+    emphasis: str = "",
+    accent_hex: str = "#FFFFFF",
+    text_position: str = "top",
 ) -> Path:
+    """Composite the sender's image and the title into a thumbnail.
+
+    The optional arguments carry art direction (which word to colour, and whether
+    the text sits above or below the picture). They default to the behaviour this
+    function has always had, so callers that know nothing about them are unaffected.
+    """
     canvas_w, canvas_h = size
     tall = canvas_h > canvas_w
 
@@ -188,23 +245,33 @@ def render_thumbnail(
         block_height = text_height + gap + drawn.height
         block_top = max(margin, (canvas_h - block_height) // 2)
 
-        canvas.paste(
-            drawn,
-            ((canvas_w - drawn.width) // 2, block_top + text_height + gap),
-        )
+        # Text above the picture by default; art direction can move it below so it
+        # does not cover the subject of the photo. Either way the two are centred
+        # together as one block -- see the comment above.
+        if text_position == "bottom":
+            picture_top = block_top
+            text_top = block_top + drawn.height + gap
+        else:
+            text_top = block_top
+            picture_top = block_top + text_height + gap
 
-        y = block_top
+        canvas.paste(drawn, ((canvas_w - drawn.width) // 2, picture_top))
+
+        accent = _hex_to_rgb(accent_hex)
+        y = text_top
         shadow_offset = max(2, canvas_h // 500)
         for line in lines:
             width = draw.textlength(line, font=font)
-            x = (canvas_w - width) / 2
-            draw.text(
-                (x + shadow_offset, y + shadow_offset),
+            _draw_line(
+                draw,
                 line,
-                font=font,
-                fill=(0, 0, 0),
+                font,
+                (canvas_w - width) / 2,
+                y,
+                shadow_offset,
+                emphasis,
+                accent,
             )
-            draw.text((x, y), line, font=font, fill=(255, 255, 255))
             y += line_height
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -236,16 +303,35 @@ class ThumbnailStage(BaseStage):
 
         source = ctx.media_store.resolve(job.job_id, source_name)
         job_dir = ctx.media_store.job_dir(job.job_id)
-        title = job.title or job.source.subject
+        subject = job.title or job.source.subject
+
+        direction = self._direct(job, ctx, source, subject)
+        # A reviewer's earlier choice wins over a freshly generated hook, so a
+        # re-render after they picked one does not silently overwrite it.
+        title = job.thumbnail_text or (direction.hooks[0] if direction.hooks else subject)
+
+        job.thumbnail_hooks = direction.hooks
+        job.thumbnail_text = title
+        job.thumbnail_direction = {
+            "emphasis": direction.emphasis,
+            "accent_hex": direction.accent_hex,
+            "text_position": direction.text_position,
+            "rationale": direction.rationale,
+        }
 
         from ytshort.config import PROJECT_ROOT
 
-        tall = render_thumbnail(
-            source, title, job_dir / "thumbnail_tall.jpg", TALL_SIZE, PROJECT_ROOT
+        render = partial(
+            render_thumbnail,
+            source,
+            title,
+            project_root=PROJECT_ROOT,
+            emphasis=direction.emphasis,
+            accent_hex=direction.accent_hex,
+            text_position=direction.text_position,
         )
-        wide = render_thumbnail(
-            source, title, job_dir / "thumbnail_wide.jpg", WIDE_SIZE, PROJECT_ROOT
-        )
+        tall = render(output_path=job_dir / "thumbnail_tall.jpg", size=TALL_SIZE)
+        wide = render(output_path=job_dir / "thumbnail_wide.jpg", size=WIDE_SIZE)
 
         job.media.thumbnail_tall = tall.name
         job.media.thumbnail_wide = wide.name
@@ -266,3 +352,45 @@ class ThumbnailStage(BaseStage):
                     action_taken="upload may be skipped",
                 )
             )
+
+    def _direct(
+        self, job: Job, ctx: PipelineContext, source: Path, subject: str
+    ) -> ThumbnailDirection:
+        """Ask the art director for a hook, recording whether it actually ran.
+
+        A job whose thumbnail says the raw subject because the director was off must
+        not look like one that was art-directed and happened to agree -- so both
+        outcomes produce a finding.
+        """
+        director = ctx.art_director or NoopArtDirector()
+        direction = director.direct(source, subject, job.source.body_snippet)
+        direction = direction.sanitised(subject)
+
+        if direction.skipped:
+            # Info rather than warn when nothing is configured: that is a choice,
+            # not a degraded run.
+            job.add_finding(
+                Finding(
+                    stage=self.name,
+                    kind="thumbnail.hooks_not_generated",
+                    severity=(
+                        Severity.info if director.name == "none" else Severity.warn
+                    ),
+                    where=source.name,
+                    detail=f"{direction.detail}; using the email subject",
+                    action_taken="subject used as the thumbnail text",
+                )
+            )
+            return direction
+
+        job.add_finding(
+            Finding(
+                stage=self.name,
+                kind="thumbnail.hooks_generated",
+                severity=Severity.info,
+                where=source.name,
+                detail=f"{direction.provider}: {' | '.join(direction.hooks)}",
+                action_taken=f"rendered with {direction.hooks[0]!r}",
+            )
+        )
+        return direction

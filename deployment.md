@@ -1,10 +1,15 @@
 # Deployment
 
 The complete runbook, starting from **no Google account and no Azure resources**.
-Eleven phases. Every step says what it produces and how to confirm it worked, so
-you should never have to improvise.
+Twelve phases, forty-one numbered steps. Every step says what it produces and how
+to confirm it worked, so you should never have to improvise.
 
 You do **not** need Docker locally — `az acr build` builds server-side.
+
+> **Shell.** Phase 3 is PowerShell (it installs Windows prerequisites). **From
+> phase 4 onward every command is bash** — `export`, `$(…)`, `jq`, `openssl`,
+> `/dev/null`. On Windows, switch to WSL, Git Bash, or Azure Cloud Shell before
+> phase 4 and stay there.
 
 > **Read phase 0 before buying or configuring anything.** The choice of Google
 > account there is the single biggest security decision in the whole deployment,
@@ -19,7 +24,7 @@ You do **not** need Docker locally — `az acr build` builds server-side.
 | [2](#phase-2--submit-the-compliance-audit) | Submit the compliance audit | 15 min, then wait |
 | [3](#phase-3--local-install-and-the-one-time-consent) | Local install, consent, prove it works | 30 min |
 | [4](#phase-4--azure-foundation) | Azure foundation | 15 min |
-| [5](#phase-5--secrets-into-key-vault) | Secrets into Key Vault | 5 min |
+| [5](#phase-5--secrets-and-assets-into-place) | Secrets into Key Vault, background track onto the share | 10 min |
 | [6](#phase-6--build-the-image) | Build the image | 10 min |
 | [7](#phase-7--deploy-the-workloads-ingress-internal) | Deploy workloads (internal) | 10 min |
 | [8](#phase-8--entra-app-registration-and-easyauth) | Entra app registration + EasyAuth | 20 min |
@@ -153,8 +158,14 @@ debugging a filter graph through a container log is miserable.
     media for publication.
 
 13. Drop a licensed track into `assets/audio/` and record it in
-    [`assets/audio/AUDIO_LICENSES.md`](assets/audio/AUDIO_LICENSES.md). The
-    YouTube Audio Library (YouTube Studio → Audio library) is a free source.
+    [`assets/audio/AUDIO_LICENSES.md`](assets/audio/AUDIO_LICENSES.md).
+    [Mixkit](https://mixkit.co/free-stock-music/) needs no account and no
+    attribution; the YouTube Audio Library (YouTube Studio → Audio library) needs
+    a sign-in but is the only source where Google guarantees its tracks are not
+    Content ID claimed.
+
+    The same file goes onto the Azure share in step 23 — the image never carries
+    it, because `assets/audio/` is gitignored and dockerignored.
 
 14. ```bash
     uv run ytshort doctor
@@ -239,7 +250,13 @@ debugging a filter graph through a container log is miserable.
     Creating role assignments requires **User Access Administrator** or **Owner**
     on the resource group. A plain Contributor deployment fails here.
 
-21. Capture the outputs — every later phase reads them from the environment:
+21. Capture the outputs — every later phase reads them from the environment.
+
+    **These exports are load-bearing and invisible.** The `.bicepparam` files pull
+    them with `readEnvironmentVariable()`, so `apps.bicep` never names them on the
+    command line. In a new shell they are gone and the deployment fails with
+    `BCP427` before it touches Azure. Phases 7, 9 and 11 all re-run that
+    deployment — re-run this block first each time.
 
     ```bash
     OUT=$(az deployment group show -g $RG -n foundation --query properties.outputs -o json)
@@ -248,6 +265,8 @@ debugging a filter graph through a container log is miserable.
     export KEY_VAULT_NAME=$(echo $OUT | jq -r .keyVaultName.value)
     export ACA_ENV_NAME=$(echo $OUT | jq -r .environmentName.value)
     export ACA_STORAGE_NAME=$(echo $OUT | jq -r .environmentStorageName.value)
+    export STORAGE_ACCOUNT=$(echo $OUT | jq -r .storageAccountName.value)
+    export FILE_SHARE=$(echo $OUT | jq -r .fileShareName.value)
     export JOB_IDENTITY_ID=$(echo $OUT | jq -r .jobIdentityResourceId.value)
     export JOB_IDENTITY_CLIENT_ID=$(echo $OUT | jq -r .jobIdentityClientId.value)
     export REVIEW_IDENTITY_ID=$(echo $OUT | jq -r .reviewIdentityResourceId.value)
@@ -261,7 +280,7 @@ debugging a filter graph through a container log is miserable.
 
 ---
 
-## Phase 5 — Secrets into Key Vault
+## Phase 5 — Secrets and assets into place
 
 22. Set the three Google secrets (from step 17) plus a CSRF signing secret:
 
@@ -305,45 +324,78 @@ debugging a filter graph through a container log is miserable.
 > ```bash
 > az keyvault secret list --vault-name $KEY_VAULT_NAME --query "[].name" -o tsv
 > ```
-> The four names above plus `appinsights-connection-string`, which the foundation
-> deployment created for you.
+> At least these five: the four you just set plus `appinsights-connection-string`,
+> which the foundation deployment created for you. Add `virustotal-api-key` if you
+> took the optional step. Phase 8 adds a sixth, `easyauth-client-secret`, so this
+> list grows later — that is expected.
 
----
+23. **Put the background track on the share.** `assets/audio/` is gitignored
+    **and** dockerignored — music is not ours to redistribute — so the directory
+    inside the image is always empty. In Azure the app reads
+    `/data/assets/audio` on the mounted file share instead
+    (`YTSHORT_AUDIO_DIR`, set in `apps.bicep`).
 
-## Phase 5b — Background music onto the share
+    ```bash
+    export STORAGE_KEY=$(az storage account keys list -n $STORAGE_ACCOUNT -g $RG --query "[0].value" -o tsv)
 
-The pipeline renders over a licensed track you supply. `assets/audio/` is
-gitignored **and** dockerignored — music is not ours to redistribute — so the
-directory inside the image is always empty. In Azure the app reads
-`/data/assets/audio` on the mounted file share instead
-(`YTSHORT_AUDIO_DIR`, set in `apps.bicep`).
+    az storage directory create --account-name $STORAGE_ACCOUNT --account-key $STORAGE_KEY \
+      --share-name $FILE_SHARE --name assets
+    az storage directory create --account-name $STORAGE_ACCOUNT --account-key $STORAGE_KEY \
+      --share-name $FILE_SHARE --name assets/audio
 
-Without this, every `compose` fails with "No licensed audio track found", the job
-retries with backoff, and after `YTSHORT_MAX_STAGE_ATTEMPTS` it dead-letters to
-`failed`.
+    az storage file upload --account-name $STORAGE_ACCOUNT --account-key $STORAGE_KEY \
+      --share-name $FILE_SHARE --source ./assets/audio/SereneView-ByArulo.mp3 \
+      --path assets/audio/SereneView-ByArulo.mp3
+    az storage file upload --account-name $STORAGE_ACCOUNT --account-key $STORAGE_KEY \
+      --share-name $FILE_SHARE --source ./assets/audio/AUDIO_LICENSES.md \
+      --path assets/audio/AUDIO_LICENSES.md
+    ```
 
-```bash
-az storage directory create --account-name $STORAGE_ACCOUNT --share-name $FILE_SHARE --name assets
-az storage directory create --account-name $STORAGE_ACCOUNT --share-name $FILE_SHARE --name assets/audio
-az storage file upload --account-name $STORAGE_ACCOUNT --share-name $FILE_SHARE \
-  --source ./calm-loop.mp3 --path assets/audio/calm-loop.mp3
-```
+    The licence manifest goes up too, not just the track: `ytshort doctor` reads it
+    from beside the audio, and `docs/youtube-audit.md` tells Google that manifest
+    is authoritative for audio licensing. A track on the share with no manifest
+    beside it is a claim you cannot dispute.
 
-Record the track in `assets/audio/AUDIO_LICENSES.md` and commit that. It is what
-`docs/youtube-audit.md` tells Google is authoritative for audio licensing, and
-`ytshort doctor` now warns about any track missing a row.
+    **Skip this step and nothing ever publishes.** Every `compose` fails with "No
+    licensed audio track found", the job retries with backoff, and after
+    `YTSHORT_MAX_STAGE_ATTEMPTS` it dead-letters to `failed` — silently, on every
+    scheduled run.
+
+> ✅ **Verify:**
+> ```bash
+> az storage file list --account-name $STORAGE_ACCOUNT --account-key $STORAGE_KEY \
+>   --share-name $FILE_SHARE --path assets/audio -o table
+> ```
+> Both the `.mp3` and `AUDIO_LICENSES.md` are listed.
 
 ---
 
 ## Phase 6 — Build the image
 
-23. ```bash
+24. Resolve the base-image digests, then build:
+
+    ```bash
     export IMAGE_TAG=$(date +%Y%m%d%H%M%S)
-    az acr build -r $ACR_NAME -t ytshort:$IMAGE_TAG -t ytshort:latest .
+
+    # Resolve once, pin thereafter. A floating tag means the image you scanned is
+    # not necessarily the image you shipped.
+    docker buildx imagetools inspect python:3.12-slim-bookworm --format '{{.Manifest.Digest}}'
+
+    az acr build -r $ACR_NAME -t ytshort:$IMAGE_TAG -t ytshort:latest \
+      --build-arg PYTHON_IMAGE=python:3.12-slim-bookworm@sha256:<digest> \
+      --build-arg UV_VERSION=0.9.18 .
     ```
 
-    The build runs in Azure, so no local Docker daemon is needed. ffmpeg is
-    installed from Debian inside the image.
+    The build runs in Azure, so no local Docker daemon is needed for the build
+    itself — only for `imagetools inspect`, and you can read the digest from the
+    registry UI instead. ffmpeg is installed from Debian inside the image.
+
+    Both `--build-arg` values have defaults in the `Dockerfile`, so omitting them
+    still builds; passing them is what makes the build reproducible.
+    **Keep `UV_VERSION` in step with the `uv` that wrote `uv.lock`** — an older
+    `uv` cannot read a lockfile written by a newer one, and the failure surfaces
+    as a confusing resolution error inside the build rather than at `uv lock`
+    time.
 
 > ✅ **Verify:** `az acr repository show-tags -n $ACR_NAME --repository ytshort -o tsv`
 
@@ -351,7 +403,7 @@ Record the track in `assets/audio/AUDIO_LICENSES.md` and commit that. It is what
 
 ## Phase 7 — Deploy the workloads, ingress **internal**
 
-24. ```bash
+25. ```bash
     export ALLOWED_SENDERS=you@example.com
     export EMAIL_RECIPIENTS=you@example.com
 
@@ -360,13 +412,38 @@ Record the track in `assets/audio/AUDIO_LICENSES.md` and commit that. It is what
       -p infra/environments/apps.dev.bicepparam
     ```
 
+    **Both exports are mandatory.** Neither has a fallback in the parameter file,
+    so a missing one fails the build with `BCP427` before anything reaches Azure.
+    That is deliberate: the `email` sink is on by default and the app treats "email
+    sink enabled, no recipients" as fatal, so an empty fallback would produce a
+    *successful* deployment and three crash-looping containers.
+
+    **Optional — AI thumbnail hooks.** A model can write a short hook for the
+    thumbnail instead of using the raw email subject. It needs **no secret**: the
+    ingest Job authenticates to your Foundry deployment with the same managed
+    identity it already uses for Key Vault. Set `foundryResourceGroup` and
+    `foundryAccountName` in `apps.dev.bicepparam` and this deployment grants that
+    identity `Cognitive Services OpenAI User`, scoped to the account alone.
+
+    Leave them empty for the first deployment. Get the pipeline working end to end
+    first — the role takes **up to five minutes** to propagate, and a `403` during
+    that window is easy to mistake for a deployment problem. (It is not fatal: the
+    job records a `thumbnail.hooks_not_generated` warning and renders with the
+    subject.)
+
     `ingressExternal` is `false` in the parameter file. **Leave it that way for
     now.** The next phase explains why.
 
-    This creates the hourly ingest Job, the nightly prune Job, the review App,
-    and the two least-privilege grants for the review identity: read on
-    `csrf-secret` only, and a custom role whose entire permission set is
-    `Microsoft.App/jobs/read` + `Microsoft.App/jobs/start/action` on the one Job.
+    Like phase 4, this needs **Owner** or **User Access Administrator** — it
+    creates a custom role definition and three role assignments. A plain
+    Contributor gets through the foundation deployment and fails here.
+
+    This creates the hourly ingest Job, the nightly prune Job, the review App, and
+    three least-privilege grants for the review identity: read on `csrf-secret`,
+    read on `appinsights-connection-string`, and a custom role whose entire
+    permission set is `Microsoft.App/jobs/read` + `Microsoft.App/jobs/start/action`
+    on the one Job. Each Key Vault grant is scoped to a **single secret**, never
+    the vault.
 
 > ✅ **Verify:** `az containerapp job list -g $RG -o table` shows two jobs, and
 > `az containerapp show -n ca-ytshort-dev-review -g $RG --query properties.configuration.ingress.external`
@@ -382,7 +459,7 @@ external ingress first and configure auth second, there is a window — minutes,
 maybe hours if you get interrupted — where **an unauthenticated public endpoint
 can approve YouTube uploads**. Phases 7 and 9 exist to close that window.
 
-25. Get the FQDN the app *will* use:
+26. Get the FQDN the app *will* use:
 
     ```bash
     export REVIEW_APP=ca-ytshort-dev-review
@@ -391,7 +468,7 @@ can approve YouTube uploads**. Phases 7 and 9 exist to close that window.
     echo $FQDN
     ```
 
-26. Register the Entra application:
+27. Register the Entra application:
 
     ```bash
     export APP_ID=$(az ad app create \
@@ -407,7 +484,7 @@ can approve YouTube uploads**. Phases 7 and 9 exist to close that window.
     `--sign-in-audience AzureADMyOrg` is **single tenant**. The multi-tenant
     default would let any Entra account anywhere sign in.
 
-27. Store the provider secret and turn auth on:
+28. Store the provider secret and turn auth on:
 
     ```bash
     az keyvault secret set --vault-name $KEY_VAULT_NAME \
@@ -439,7 +516,7 @@ can approve YouTube uploads**. Phases 7 and 9 exist to close that window.
     > `az containerapp auth show/update --set`, or temporarily set the probe to a
     > TCP probe instead. Do not solve it by disabling auth.
 
-28. **Restrict who may sign in.** In the portal, *Entra ID → Enterprise
+29. **Restrict who may sign in.** In the portal, *Entra ID → Enterprise
     applications → ytshort review (dev) → Properties*, set **Assignment
     required = Yes**, then under *Users and groups* assign only yourself.
     Without this, every account in your tenant can reach the approval UI.
@@ -451,31 +528,64 @@ can approve YouTube uploads**. Phases 7 and 9 exist to close that window.
 
 ## Phase 9 — Go external
 
-29. Now, and only now, expose the app. Edit
+30. Now, and only now, expose the app. Edit
     `infra/environments/apps.dev.bicepparam`, set `ingressExternal = true`, and
     redeploy:
 
     ```bash
+    # If this is a new shell, re-run step 21's export block first -- the
+    # parameter file reads those values from the environment.
     az deployment group create -g $RG -n apps \
       -f infra/apps.bicep \
       -p infra/environments/apps.dev.bicepparam
     ```
 
-> ✅ **Verify:** open `https://$FQDN/reviews` — you should be redirected to a
-> Microsoft sign-in page, not to the queue.
+31. **Repair what the redeploy just broke.** Two things change underneath you
+    here, and both silently break sign-in:
+
+    * **The hostname changes.** Internal ingress gives
+      `…-review.internal.<env>.<region>.azurecontainerapps.io`; external drops the
+      `.internal.` segment. The redirect URI you registered in step 27 no longer
+      matches.
+    * **The EasyAuth secret is deleted.** `apps.bicep` declares only
+      `csrf-secret` and `appinsights-connection-string`, and an ARM deployment
+      replaces the whole secret collection — so `easyauth-client-secret`, which
+      you set out-of-band in step 28, is gone.
+
+    ```bash
+    export FQDN=$(az containerapp show -n $REVIEW_APP -g $RG \
+      --query properties.configuration.ingress.fqdn -o tsv)
+    echo $FQDN            # note: no '.internal.' now
+
+    az ad app update --id $APP_ID \
+      --web-redirect-uris "https://$FQDN/.auth/login/aad/callback"
+
+    az containerapp secret set -n $REVIEW_APP -g $RG \
+      --secrets easyauth-client-secret="$APP_SECRET"
+    ```
+
+    If `$APP_SECRET` is no longer in your shell, read it back from Key Vault:
+    `az keyvault secret show --vault-name $KEY_VAULT_NAME -n easyauth-client-secret --query value -o tsv`.
+
+    This applies to **every** later `apps.bicep` redeploy, not just this one — see
+    phase 11.
+
+> ✅ **Verify:** open `https://$FQDN/reviews` and **complete a sign-in**. Landing
+> on a Microsoft sign-in page is not enough — a stale redirect URI gets you that
+> far and then fails. You must end up on the review queue.
 
 ---
 
 ## Phase 10 — Smoke test and security verification
 
-30. Force an immediate run rather than waiting for the hour:
+32. Force an immediate run rather than waiting for the hour:
 
     ```bash
     az containerapp job start -n aj-ytshort-dev-run -g $RG
     az containerapp job execution list -n aj-ytshort-dev-run -g $RG -o table
     ```
 
-31. Watch the logs. One job's whole lifecycle shares a `correlation_id`:
+33. Watch the logs. One job's whole lifecycle shares a `correlation_id`:
 
     ```bash
     az containerapp job logs show -n aj-ytshort-dev-run -g $RG --container ytshort --follow
@@ -506,10 +616,12 @@ can approve YouTube uploads**. Phases 7 and 9 exist to close that window.
     traces | where customDimensions.event == "job_trigger.requested"
     ```
 
-    Cloud role name distinguishes the two workloads: `ytshort-job` and
-    `ytshort-review`.
+    Cloud role name distinguishes the workloads: `ytshort-job` for the ingest Job
+    and `ytshort-review` for the review app. The nightly prune Job has no explicit
+    service name and reports as plain `ytshort` — filter on the container app name
+    if you need to isolate it.
 
-32. Mail the watched account a photo. After the next tick (or another
+34. Mail the watched account a photo. After the next tick (or another
     `job start`), it should reach `awaiting_review`. Open the review URL, sign
     in, check the preview and the findings table, and approve. The app records
     the decision and **starts the Job** — it never uploads anything itself.
@@ -517,17 +629,17 @@ can approve YouTube uploads**. Phases 7 and 9 exist to close that window.
 **Security checks — part of "done", not extra credit.** Every one of these
 verifies a specific design decision:
 
-33. **Unauthenticated access is refused.**
+35. **Unauthenticated access is refused.**
     ```bash
     curl -sS -o /dev/null -w '%{http_code}\n' https://$FQDN/reviews   # expect 302 to login
     curl -sS https://$FQDN/health                                     # expect {"status":"ok"}
     curl -sS https://$FQDN/health/detail                              # expect a login redirect
     ```
 
-34. **`/health` leaks nothing.** The body must be exactly `{"status":"ok"}` — no
+36. **`/health` leaks nothing.** The body must be exactly `{"status":"ok"}` — no
     version, no paths, no credential state.
 
-35. **The review app holds no Google credential.**
+37. **The review app holds no Google credential.**
     ```bash
     az containerapp show -n $REVIEW_APP -g $RG -o json | grep -iE "refresh_token|client_secret|google" || echo "clean"
     ```
@@ -535,27 +647,34 @@ verifies a specific design decision:
     ```bash
     az role assignment list --assignee $REVIEW_IDENTITY_PRINCIPAL_ID -o table
     ```
-    Expect `AcrPull`, the custom *ytshort Job Starter* role, and a Key Vault
-    Secrets User assignment **scoped to `.../secrets/csrf-secret`** — not to the
-    vault.
+    Expect **four**: `AcrPull`, the custom *ytshort Job Starter* role, and **two**
+    Key Vault Secrets User assignments — one scoped to `.../secrets/csrf-secret`,
+    one to `.../secrets/appinsights-connection-string`.
 
-36. **No credential on the share.**
+    The count is not the point; the **scope** is. Each Key Vault grant must name a
+    single secret. A `Key Vault Secrets User` assignment scoped to the *vault* is
+    the failure this step exists to catch — it would let the internet-facing app
+    read the Google credential sitting in the same vault.
+
+38. **No credential on the share.**
     ```bash
-    az storage file list --account-name <storage> --share-name ytshort-data -o table
+    az storage file list --account-name $STORAGE_ACCOUNT --account-key $STORAGE_KEY \
+      --share-name $FILE_SHARE -o table
     ```
-    There must be no `token.json`.
+    There must be no `token.json`. The share holds job records, rendered media and
+    the background track — never a credential.
 
-37. **No secrets in deployment history.**
+39. **No secrets in deployment history.**
     ```bash
     az deployment group show -g $RG -n foundation --query properties.outputs
     az deployment group show -g $RG -n apps       --query properties.parameters
     ```
     Nothing secret-shaped in either.
 
-38. **The allow-list holds.** Mail the watched account from an address that is
+40. **The allow-list holds.** Mail the watched account from an address that is
     not in `ALLOWED_SENDERS`. Trigger a run. It must be ignored — no job created.
 
-39. **The revocation runbook works.** Walk
+41. **The revocation runbook works.** Walk
     [`docs/security.md`](docs/security.md) → *Revocation* end to end, then
     re-consent and restore. A runbook nobody has executed is a guess.
 
@@ -567,11 +686,18 @@ verifies a specific design decision:
 
 ```bash
 export IMAGE_TAG=$(date +%Y%m%d%H%M%S)
-az acr build -r $ACR_NAME -t ytshort:$IMAGE_TAG .
+az acr build -r $ACR_NAME -t ytshort:$IMAGE_TAG -t ytshort:latest \
+  --build-arg PYTHON_IMAGE=python:3.12-slim-bookworm@sha256:<digest> \
+  --build-arg UV_VERSION=0.9.18 .
 az containerapp job update -n aj-ytshort-dev-run   -g $RG --image $ACR_LOGIN_SERVER/ytshort:$IMAGE_TAG
 az containerapp job update -n aj-ytshort-dev-prune -g $RG --image $ACR_LOGIN_SERVER/ytshort:$IMAGE_TAG
 az containerapp update     -n $REVIEW_APP          -g $RG --image $ACR_LOGIN_SERVER/ytshort:$IMAGE_TAG
 ```
+
+These are targeted `update` calls, not a template redeploy, so they leave the
+secret collection alone — no auth repair needed afterwards. **A full
+`az deployment group create` on `apps.bicep` is different**: it replaces the
+secrets and needs step 31 run again.
 
 ### Rotate the Google credential
 
@@ -589,6 +715,11 @@ into a revision.
 ### Change the schedule
 
 Edit `cronExpression` in the parameter file and redeploy `apps.bicep`.
+
+> **Any `apps.bicep` redeploy needs two things around it.** Re-run step 21's
+> export block first (the parameter file reads the environment), and re-run
+> **step 31** afterwards to restore `easyauth-client-secret`. This applies to this
+> section and to the audit-clearing one below.
 
 ### When the compliance audit clears
 
@@ -620,18 +751,27 @@ az ad app delete --id $APP_ID
 
 ## Ordering traps, collected
 
-All three fail silently, which is why they are called out repeatedly above:
+All five fail silently, which is why they are called out repeatedly above:
 
 | Trap | Phases | What happens if you skip it |
 |---|---|---|
 | Secrets before workloads | 5 → 7 | `apps.bicep` fails: it grants access to a `csrf-secret` that does not exist |
+| **Background track on the share** | 5 → 10 | Nothing ever publishes. Every `compose` fails "No licensed audio track found", retries with backoff, then dead-letters to `failed` — on every scheduled run, for as long as the deployment exists |
 | Image before workloads | 6 → 7 | Containers deploy but never start — the tag is missing |
 | **Internal before external** | 7 → 8 → 9 | A public, unauthenticated endpoint that can approve YouTube uploads |
+| **Re-fix auth after any `apps.bicep` redeploy** | 8 → 9, and every redeploy | Sign-in breaks: the redeploy replaces the secret collection (dropping `easyauth-client-secret`) and, going external, changes the hostname the redirect URI was registered against |
+
+---
 
 ## CI/CD
 
 Deployment is currently driven by the `az` CLI steps above. An **Azure DevOps
-pipeline is planned and will be added later** — it will wrap phases 6–9
+pipeline is planned and will be added later** — it will wrap phases 6, 7 and 9
 (validate → `az acr build` → `what-if` → deploy) using workload identity
-federation instead of a service principal secret. Phases 0–3 stay manual by
-nature; they are one-time human steps.
+federation instead of a service principal secret.
+
+Phases 0–3 stay manual by nature; they are one-time human steps. Phase 4 is a
+one-time bootstrap. Phase 5 stays manual too, for two reasons that will not go
+away: the Google secrets are extracted from an interactive consent, and the
+background track is a licensed file held locally, not in the repo. Phase 8 is a
+one-time Entra registration, and phase 10 is a human smoke test.

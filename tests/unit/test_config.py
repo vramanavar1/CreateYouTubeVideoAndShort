@@ -152,3 +152,31 @@ class TestTelemetryReadiness:
         # returning None -- which would take out `ytshort doctor`, the one command
         # you run when things are already broken.
         assert config._module_available("definitely_not_installed.sub.module") is False
+
+
+class TestArtDirectorReadiness:
+    def test_foundry_without_an_endpoint_is_reported(self, audio_settings, monkeypatch) -> None:
+        _audio, build = audio_settings
+        monkeypatch.setenv("YTSHORT_ART_DIRECTOR", "foundry")
+
+        problems = _problem_text(build())
+        assert "YTSHORT_FOUNDRY_ENDPOINT" in problems
+
+    def test_foundry_without_the_extra_is_reported(self, audio_settings, monkeypatch) -> None:
+        _audio, build = audio_settings
+        monkeypatch.setenv("YTSHORT_ART_DIRECTOR", "foundry")
+        monkeypatch.setenv("YTSHORT_FOUNDRY_ENDPOINT", "https://x.openai.azure.com/openai/v1/")
+        monkeypatch.setattr(config, "_module_available", lambda _name: False)
+
+        assert "--extra foundry" in _problem_text(build())
+
+    def test_nothing_is_reported_when_the_director_is_off(self, audio_settings) -> None:
+        _audio, build = audio_settings
+
+        problems = _problem_text(build())
+        assert "FOUNDRY" not in problems
+
+    def test_the_deployment_name_defaults_to_mini(self, audio_settings) -> None:
+        _audio, build = audio_settings
+
+        assert build().foundry_deployment == "gpt-4o-mini"

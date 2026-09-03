@@ -20,6 +20,9 @@ from typing import Literal
 
 from dotenv import load_dotenv
 
+# Imported for the default only; the module has no heavy or optional deps.
+from ytshort.integrations.art_director import DEFAULT_API_VERSION
+
 # Repo root is the parent of ``src/``. Relative paths in .env (audio dir, data
 # dir) resolve against this, so the CLI behaves the same from any working
 # directory.
@@ -146,6 +149,16 @@ class Settings:
     virustotal_api_key: str
     moderation_provider: str
     anthropic_api_key: str
+
+    # -- Thumbnail art direction -------------------------------------------
+    #: Writes the thumbnail hook. Deliberately no API key: the Foundry provider
+    #: authenticates with the job's managed identity, so there is no secret to
+    #: store or rotate.
+    art_director: str
+    foundry_endpoint: str
+    foundry_api_version: str
+    foundry_deployment: str
+    thumbnail_hook_variants: int
 
     # -- Publishing --------------------------------------------------------
     privacy_status: PrivacyStatus
@@ -352,6 +365,15 @@ class Settings:
             virustotal_api_key=_env("VIRUSTOTAL_API_KEY"),
             moderation_provider=_env("YTSHORT_MODERATION_PROVIDER", "none").lower(),
             anthropic_api_key=_env("ANTHROPIC_API_KEY"),
+            art_director=_env("YTSHORT_ART_DIRECTOR", "none").lower(),
+            # The resource base, e.g. https://my-foundry.openai.azure.com -- the
+            # AzureOpenAI client appends the route and api-version itself.
+            foundry_endpoint=_env("YTSHORT_FOUNDRY_ENDPOINT").rstrip("/"),
+            foundry_api_version=_env("YTSHORT_FOUNDRY_API_VERSION", DEFAULT_API_VERSION),
+            # The *deployment* name, which may differ from the model name. A
+            # mismatch returns 404 on an otherwise valid endpoint.
+            foundry_deployment=_env("YTSHORT_FOUNDRY_DEPLOYMENT", "gpt-4o-mini"),
+            thumbnail_hook_variants=_env_int("YTSHORT_THUMBNAIL_HOOK_VARIANTS", 3, problems),
             privacy_status=privacy,  # type: ignore[arg-type]
             video_category_id=_env("YTSHORT_VIDEO_CATEGORY_ID", "22"),
             video_tags=tuple(_env_list("YTSHORT_VIDEO_TAGS") or ["shorts"]),
@@ -421,6 +443,15 @@ class Settings:
             problems.append("email sink enabled but YTSHORT_EMAIL_RECIPIENTS is empty")
         if self.moderation_provider == "claude" and not self.anthropic_api_key:
             problems.append("moderation provider is 'claude' but ANTHROPIC_API_KEY is unset")
+        if self.art_director == "foundry" and not self.foundry_endpoint:
+            problems.append(
+                "YTSHORT_ART_DIRECTOR=foundry but YTSHORT_FOUNDRY_ENDPOINT is unset"
+            )
+        if self.art_director == "foundry" and not _module_available("openai"):
+            problems.append(
+                "YTSHORT_ART_DIRECTOR=foundry but the openai package is not installed "
+                "(uv sync --extra foundry)"
+            )
         if self.telemetry_configured and not _module_available(
             "azure.monitor.opentelemetry"
         ):

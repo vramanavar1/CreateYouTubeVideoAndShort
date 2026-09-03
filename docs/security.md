@@ -32,7 +32,7 @@ Two rules that prevent the classic leaks:
 - **Every secret parameter is `@secure()`.** Non-secure parameter values are
   recorded in deployment history too.
 
-Verify both with deployment.md step 37.
+Verify both with deployment.md step 39.
 
 ---
 

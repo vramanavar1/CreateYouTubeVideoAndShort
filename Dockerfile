@@ -45,12 +45,12 @@ WORKDIR /app
 # --no-install-project now that the workspace has more than one member.
 COPY pyproject.toml uv.lock README.md ./
 COPY libs/ccol/pyproject.toml libs/ccol/README.md ./libs/ccol/
-RUN uv sync --frozen --no-dev --no-install-workspace --extra azure --extra observability
+RUN uv sync --frozen --no-dev --no-install-workspace --extra azure --extra observability --extra foundry
 
 COPY src/ ./src/
 COPY libs/ ./libs/
 COPY assets/ ./assets/
-RUN uv sync --frozen --no-dev --extra azure --extra observability
+RUN uv sync --frozen --no-dev --extra azure --extra observability --extra foundry
 
 
 FROM ${PYTHON_IMAGE} AS runtime

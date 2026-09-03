@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.conftest import make_png
 from ytshort.contracts.models import (
     Job,
     JobState,
@@ -239,3 +240,105 @@ def test_context_factory_is_wired(settings) -> None:
     """The real app builds its own context; only the test overrides it."""
     app = create_app(settings)
     assert isinstance(app.state.context_factory(), PipelineContext)
+
+
+def _renderable_job(ctx, **kwargs) -> Job:
+    """A parked job whose primary image actually exists, so a re-render can run."""
+    job = _parked_job(ctx, **kwargs)
+    job.media.primary_image = "pic.png"
+    job.thumbnail_hooks = ["GOLDEN HOUR", "THAT SKY", "UNREAL LIGHT"]
+    job.thumbnail_text = "GOLDEN HOUR"
+    job.thumbnail_direction = {
+        "emphasis": "GOLDEN",
+        "accent_hex": "#FFD400",
+        "text_position": "top",
+    }
+    (ctx.media_store.job_dir(job.job_id) / "pic.png").write_bytes(make_png(800, 600))
+    ctx.job_store.save(job)
+    return job
+
+
+class TestThumbnailReRender:
+    """Picking a different hook re-renders, and invalidates the video with it."""
+
+    def test_it_replaces_the_thumbnail_and_records_the_text(self, client, ctx) -> None:
+        job = _renderable_job(ctx)
+        before = (ctx.media_store.job_dir(job.job_id) / "thumbnail_wide.jpg").read_bytes()
+        token = _csrf(client)
+
+        response = client.post(
+            f"/reviews/{job.job_id}/thumbnail",
+            data={"csrf_token": token, "hook": "THAT SKY"},
+            follow_redirects=False,
+        )
+
+        assert response.status_code == 303
+        after = (ctx.media_store.job_dir(job.job_id) / "thumbnail_wide.jpg").read_bytes()
+        assert after != before
+        assert ctx.job_store.load(job.job_id).thumbnail_text == "THAT SKY"
+
+    def test_it_invalidates_the_composed_video(self, client, ctx) -> None:
+        # The thumbnail is spliced onto both ends of the Short. Without clearing
+        # the compose record the uploaded thumbnail and the video's own bumpers
+        # would disagree -- silently, and only visible after publishing.
+        job = _renderable_job(ctx)
+        token = _csrf(client)
+
+        client.post(
+            f"/reviews/{job.job_id}/thumbnail",
+            data={"csrf_token": token, "hook": "THAT SKY"},
+        )
+
+        reloaded = ctx.job_store.load(job.job_id)
+        assert "compose" not in reloaded.stages
+        assert reloaded.media.composed_video is None
+        # Everything before compose survives -- a re-render must not re-ingest.
+        assert "ingest" in reloaded.stages
+        assert "thumbnail" in reloaded.stages
+
+    def test_a_custom_text_wins_over_the_chosen_hook(self, client, ctx) -> None:
+        job = _renderable_job(ctx)
+        token = _csrf(client)
+
+        client.post(
+            f"/reviews/{job.job_id}/thumbnail",
+            data={"csrf_token": token, "hook": "THAT SKY", "custom": "MY OWN WORDS"},
+        )
+
+        assert ctx.job_store.load(job.job_id).thumbnail_text == "MY OWN WORDS"
+
+    def test_empty_text_changes_nothing(self, client, ctx) -> None:
+        job = _renderable_job(ctx)
+        token = _csrf(client)
+
+        client.post(
+            f"/reviews/{job.job_id}/thumbnail",
+            data={"csrf_token": token, "hook": "", "custom": "   "},
+        )
+
+        reloaded = ctx.job_store.load(job.job_id)
+        assert reloaded.thumbnail_text == "GOLDEN HOUR"
+        assert "compose" in reloaded.stages
+
+    def test_without_a_token_it_is_refused(self, client, ctx) -> None:
+        job = _renderable_job(ctx)
+
+        response = client.post(f"/reviews/{job.job_id}/thumbnail", data={"hook": "THAT SKY"})
+
+        assert response.status_code == 403
+        assert ctx.job_store.load(job.job_id).thumbnail_text == "GOLDEN HOUR"
+
+    def test_an_already_published_job_is_refused(self, client, ctx) -> None:
+        # Swapping the thumbnail of a video already on YouTube would leave the
+        # record disagreeing with what is public.
+        job = _renderable_job(ctx)
+        job.state = JobState.published
+        ctx.job_store.save(job)
+        token = _csrf(client)
+
+        response = client.post(
+            f"/reviews/{job.job_id}/thumbnail",
+            data={"csrf_token": token, "hook": "THAT SKY"},
+        )
+
+        assert response.status_code == 409

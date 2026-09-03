@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from ytshort.config import Settings
 from ytshort.contracts.models import Job, JobState, Review
+from ytshort.integrations.art_director import build_art_director
 from ytshort.integrations.google_auth import AuthError
 from ytshort.integrations.moderation import build_moderator
 from ytshort.integrations.scanner import build_scanner
@@ -63,6 +64,13 @@ def build_context(
         youtube=youtube,
         scanner=build_scanner(settings.malware_scanner, settings.virustotal_api_key),
         moderator=build_moderator(settings.moderation_provider, settings.anthropic_api_key),
+        art_director=build_art_director(
+            settings.art_director,
+            settings.foundry_endpoint,
+            settings.foundry_deployment,
+            settings.thumbnail_hook_variants,
+            settings.foundry_api_version,
+        ),
     )
 
 

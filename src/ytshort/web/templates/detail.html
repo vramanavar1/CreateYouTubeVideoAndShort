@@ -37,7 +37,36 @@
     <div class="panel">
       <h2>Upload thumbnail</h2>
       <img class="preview" alt="thumbnail"
-           src="/media/{{ job.job_id }}/{{ job.media.thumbnail_wide }}">
+           src="/media/{{ job.job_id }}/{{ job.media.thumbnail_wide }}?v={{ job.updated_at.timestamp() | int }}">
+
+      {% if can_decide %}
+      <form method="post" action="/reviews/{{ job.job_id }}/thumbnail" style="margin-top:14px">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        {% if job.thumbnail_hooks %}
+          <label>Thumbnail text</label>
+          {% for hook in job.thumbnail_hooks %}
+          <label style="display:block;font-weight:normal;margin:4px 0">
+            <input type="radio" name="hook" value="{{ hook }}"
+                   {% if hook == job.thumbnail_text %}checked{% endif %}>
+            {{ hook }}
+          </label>
+          {% endfor %}
+          {% if job.thumbnail_direction.rationale %}
+          <p class="muted" style="font-size:13px">{{ job.thumbnail_direction.rationale }}</p>
+          {% endif %}
+        {% endif %}
+        <label for="custom">Or write your own</label>
+        <input type="text" id="custom" name="custom" maxlength="90"
+               placeholder="{{ job.thumbnail_text or job.source.subject }}">
+        <div class="actions">
+          <button type="submit">Re-render thumbnail</button>
+        </div>
+      </form>
+      <p class="muted" style="margin-top:10px;font-size:13px">
+        Re-rendering also rebuilds the video, because the thumbnail is spliced onto
+        both ends of it. That happens after you approve.
+      </p>
+      {% endif %}
     </div>
     {% endif %}
   </div>

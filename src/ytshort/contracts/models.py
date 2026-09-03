@@ -196,6 +196,14 @@ class Job(BaseModel):
     description: str = ""
     tags: list[str] = Field(default_factory=list)
 
+    #: Thumbnail hook candidates and the one actually rendered. Separate from
+    #: ``title`` on purpose: the thumbnail wants a short hook, the YouTube title
+    #: wants something searchable, and a reviewer may well want different text in
+    #: each. Empty when no art director ran, in which case the subject is used.
+    thumbnail_hooks: list[str] = Field(default_factory=list)
+    thumbnail_text: str = ""
+    thumbnail_direction: dict = Field(default_factory=dict)
+
     review: Review | None = None
     publication: Publication | None = None
     deliveries: list[SinkResult] = Field(default_factory=list)

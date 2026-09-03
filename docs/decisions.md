@@ -269,3 +269,80 @@ redistribute), so the in-image directory is always empty. Pointing at the image
 meant every deployed compose failed with "No licensed audio track found" — on
 every scheduled run, forever, which SEC-1 would now dead-letter but which should
 not happen at all.
+
+---
+
+## AI-1 — The thumbnail is AI-*directed*, never AI-*generated*
+
+**Decision.** A model writes the thumbnail *hook* and picks a colour and a text
+position. The picture is always the sender's own screened attachment, composited
+by Pillow exactly as before. No pixels are generated.
+
+**Why.** The email subject is accurate but reads as a caption, and the goal is
+click-through. Rewriting it into a short hook is what a language model is good at.
+Layout, wrapping and contrast are geometry, which code does exactly and a model
+does approximately, slower and for money — so those stay in `render_thumbnail`.
+
+**Why it does not weaken the safety chain.** `stages/safety.py` and the PII OCR
+screen *attachments*. Because the composited picture is still the screened
+attachment, those guarantees are untouched. Synthesised imagery would break this,
+which is why it is out of scope.
+
+**Model output is untrusted.** Every hook passes `ThumbnailDirection.sanitised()`
+(length, closed sets, `#RRGGBB` validation, emphasis-must-occur) and then
+`sanitise_title()` at render time — the same treatment an attacker-supplied email
+subject gets, because that is exactly what it is.
+
+**Revisit if** genuinely generated imagery is ever wanted. That is a different
+decision with licensing and compliance consequences, and it contradicts what
+`docs/youtube-audit.md` tells Google about where the content comes from.
+
+---
+
+## AI-2 — Microsoft Foundry over the Anthropic API
+
+**Decision.** `YTSHORT_ART_DIRECTOR=foundry` against an existing Azure Foundry
+`gpt-4o-mini` deployment, authenticated with the job's **managed identity**.
+
+**Why not Anthropic.** The original request was to use a Claude Max subscription
+with the key in Key Vault. Max includes no API access or credits — Anthropic sells
+Individual, Team & Enterprise and API as separate products — and a subscription
+session is the wrong credential shape for an unattended cron job regardless: it
+expires and needs interactive refresh.
+
+**Why Foundry is better here, not merely adequate.** It needs **no API key at
+all**, so the original "pull the key from Key Vault" requirement disappears —
+nothing to store, rotate or leak. `DefaultAzureCredential` already has
+`AZURE_CLIENT_ID` set on the ingest job. Billing lands on the existing Azure
+subscription, and image data stays in the tenant, which matters given the pipeline
+screens for PII and makes source claims to Google.
+
+**Cost control.** Images are downscaled to a 768 px long edge before sending.
+Vision input is billed by pixel count, so this is the difference between a few
+hundred tokens and tens of thousands per job.
+
+**Revisit if** hook quality on `gpt-4o-mini` reads flat. The deployment name is an
+env var, so trying `gpt-4o` is a config change and a re-render.
+
+---
+
+## AI-3 — Three hooks, chosen by a human
+
+**Decision.** The model returns three hooks, plainest to boldest; the reviewer
+picks one or writes their own, and the thumbnail re-renders.
+
+**Why.** Misleading thumbnails are exactly what YouTube's metadata policy targets,
+and the channel is mid-compliance-audit. The system prompt requires every hook to
+describe what is visible; bolder variants are bolder *phrasing*, not stronger
+*claims*. A human choosing is the real control.
+
+**The non-obvious consequence.** `ComposeStage` splices the thumbnail onto both
+ends of the video, so re-rendering after compose would leave the uploaded
+thumbnail and the video's own bumper frames disagreeing — silently, and only
+visible once published. The re-render therefore clears the `compose` stage record,
+using the runner's existing resume mechanism to rebuild the video before publish.
+
+**Why the review app can do this safely.** Re-rendering is local Pillow work. It
+calls no model (the hooks were generated during the pipeline run and stored on the
+job) and holds no credential, so the internet-facing tier stays as powerless as
+design rule 8 requires.

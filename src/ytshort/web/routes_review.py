@@ -229,6 +229,70 @@ def build_router() -> APIRouter:
 
         return RedirectResponse(f"/reviews/{job_id}", status_code=303)
 
+    @router.post("/reviews/{job_id}/thumbnail")
+    def retitle_thumbnail(
+        request: Request,
+        job_id: str,
+        csrf_token: str = Form(""),
+        hook: str = Form(""),
+        custom: str = Form(""),
+    ) -> RedirectResponse:
+        """Re-render the thumbnail with the reviewer's chosen text.
+
+        Local Pillow work only -- no model call (the hooks were generated during
+        the pipeline run and stored on the job) and no credential, so the
+        internet-facing tier stays as powerless as it was.
+        """
+        _check_csrf(request, csrf_token)
+        ctx = request.app.state.context_factory()
+        # 409s unless the job is still awaiting review, so a published thumbnail
+        # can never be swapped out from under the video already on YouTube.
+        job = _load_decidable(ctx, job_id)
+
+        text = custom.strip() or hook.strip()
+        if not text or not job.media.primary_image:
+            return RedirectResponse(f"/reviews/{job_id}", status_code=303)
+
+        with use_job(job.job_id):
+            from ytshort.config import PROJECT_ROOT
+            from ytshort.stages.thumbnail import TALL_SIZE, WIDE_SIZE, render_thumbnail
+
+            source = ctx.media_store.resolve(job.job_id, job.media.primary_image)
+            job_dir = ctx.media_store.job_dir(job.job_id)
+            direction = job.thumbnail_direction or {}
+
+            for output, size in (
+                ("thumbnail_tall.jpg", TALL_SIZE),
+                ("thumbnail_wide.jpg", WIDE_SIZE),
+            ):
+                render_thumbnail(
+                    source,
+                    text,
+                    job_dir / output,
+                    size,
+                    PROJECT_ROOT,
+                    emphasis=str(direction.get("emphasis", "")),
+                    accent_hex=str(direction.get("accent_hex", "#FFFFFF")),
+                    text_position=str(direction.get("text_position", "top")),
+                )
+
+            job.thumbnail_text = text
+
+            # The thumbnail is spliced onto both ends of the Short, so a new one
+            # makes the rendered video stale. Dropping the stage record is the
+            # documented way to make the runner redo it -- without this the
+            # uploaded thumbnail and the video's own bumpers would disagree.
+            job.stages.pop("compose", None)
+            job.media.composed_video = None
+
+            ctx.job_store.save(job)
+            log.info(
+                "thumbnail re-rendered",
+                extra={"event": "review.thumbnail", "reviewer": _reviewer(request)},
+            )
+
+        return RedirectResponse(f"/reviews/{job_id}", status_code=303)
+
     @router.post("/reviews/{job_id}/reject")
     def reject(
         request: Request,

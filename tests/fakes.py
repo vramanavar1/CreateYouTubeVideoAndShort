@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from ytshort.integrations.art_director import ThumbnailDirection
 from ytshort.integrations.gmail_client import GmailAttachment, GmailMessage
 from ytshort.integrations.moderation import ModerationResult
 from ytshort.integrations.scanner import ScanResult
@@ -205,3 +206,30 @@ class RecordingInstrument:
 
     def attributes_for(self, key: str) -> list:
         return [attrs.get(key) for _, attrs in self.points]
+
+
+@dataclass
+class FakeArtDirector:
+    """Stands in for the Foundry art director. Never touches the network."""
+
+    name: str = "fake"
+    hooks: list[str] = field(default_factory=lambda: ["GOLDEN HOUR", "THAT SKY", "UNREAL LIGHT"])
+    emphasis: str = "SKY"
+    text_position: str = "top"
+    accent_hex: str = "#FFD400"
+    skipped: bool = False
+    detail: str = ""
+
+    def direct(self, image, subject: str, body: str) -> ThumbnailDirection:
+        if self.skipped:
+            return ThumbnailDirection(
+                hooks=[subject], provider=self.name, skipped=True, detail=self.detail
+            )
+        return ThumbnailDirection(
+            hooks=list(self.hooks),
+            emphasis=self.emphasis,
+            text_position=self.text_position,
+            accent_hex=self.accent_hex,
+            rationale="warm tones, subject low in frame",
+            provider=self.name,
+        )
