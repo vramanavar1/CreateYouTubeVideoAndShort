@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from ytshort.config import Settings
@@ -198,3 +200,59 @@ class TestReviewGate:
 
         assert outcome.job.state is JobState.published
         assert len(youtube.uploads) == 1
+
+
+class TestAudioCredit:
+    """Attribution required by a track's licence goes in every description.
+
+    It is applied here rather than left to the reviewer because the obligation
+    holds for every upload, and the one that gets forgotten is the one that draws
+    the complaint. Most tracks need no credit, so empty is the normal case.
+    """
+
+    def _job(self, body: str = "A sunset over the lake.") -> Job:
+        return Job(job_id="j", source=SourceEmail(message_id="m", body_snippet=body))
+
+    def test_a_credit_is_appended_when_set(self) -> None:
+        description = build_description(self._job(), "Track by Some Artist")
+
+        assert "Track by Some Artist" in description
+
+    def test_nothing_is_appended_when_empty(self) -> None:
+        # The default, and the normal case for a "no attribution required" track.
+        assert build_description(self._job(), "") == "A sunset over the lake.\n\n#Shorts"
+
+    def test_whitespace_only_is_treated_as_empty(self) -> None:
+        assert build_description(self._job(), "   ") == build_description(self._job())
+
+    def test_a_credit_already_in_the_body_is_not_duplicated(self) -> None:
+        # A reviewer who pasted the credit into the description themselves should
+        # not end up with it twice.
+        job = self._job("Filmed at dusk. Track by Some Artist")
+        description = build_description(job, "Track by Some Artist")
+
+        assert description.count("Track by Some Artist") == 1
+
+    def test_the_credit_precedes_the_shorts_tag(self) -> None:
+        # #Shorts has to stay last -- YouTube reads the description for it, and a
+        # trailing credit would push it out of the visible preview.
+        description = build_description(self._job(), "Track by Some Artist")
+
+        assert description.index("Track by Some Artist") < description.index("#Shorts")
+
+    def test_the_shorts_tag_is_still_added_exactly_once(self) -> None:
+        description = build_description(self._job(), "Track by Some Artist")
+
+        assert description.lower().count("#shorts") == 1
+
+    def test_the_configured_credit_reaches_the_upload(self, ctx, youtube, monkeypatch) -> None:
+        # End to end through the stage, not just the helper: this is what proves
+        # settings.audio_credit is actually wired in.
+        # Settings is a frozen dataclass, so replace the whole object rather than
+        # patching an attribute -- the instance value would shadow a class patch.
+        monkeypatch.setattr(
+            ctx, "settings", replace(ctx.settings, audio_credit="Track by Some Artist")
+        )
+        PublishStage().run(_publishable(ctx), ctx)
+
+        assert "Track by Some Artist" in youtube.uploads[0]["description"]

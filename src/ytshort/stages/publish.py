@@ -24,10 +24,21 @@ log = get_logger(__name__)
 SHORTS_TAG = "#Shorts"
 
 
-def build_description(job: Job) -> str:
-    """Description seeded from the email body, always carrying the Shorts tag."""
+def build_description(job: Job, audio_credit: str = "") -> str:
+    """Description seeded from the email body, always carrying the Shorts tag.
+
+    ``audio_credit`` is appended when the background track's licence makes
+    attribution a condition of use. It goes in here rather than being left to the
+    reviewer because the obligation applies to every upload, and the one that gets
+    forgotten is the one that draws the complaint.
+    """
     parts = [job.description.strip() or job.source.body_snippet.strip()]
     body = "\n\n".join(part for part in parts if part)
+
+    credit = audio_credit.strip()
+    if credit and credit.lower() not in body.lower():
+        body = f"{body}\n\n{credit}".strip()
+
     if SHORTS_TAG.lower() not in body.lower():
         body = f"{body}\n\n{SHORTS_TAG}".strip()
     return body
@@ -56,7 +67,7 @@ class PublishStage(BaseStage):
             raise HaltPipeline(f"composed video is missing from disk: {video_path.name}")
 
         title = (job.title or job.source.subject or "Untitled Short").strip()[:100]
-        description = build_description(job)
+        description = build_description(job, settings.audio_credit)
         tags = list(dict.fromkeys([*job.tags, *settings.video_tags]))
 
         try:

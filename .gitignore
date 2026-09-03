@@ -25,3 +25,7 @@ build/
 .ruff_cache/
 .coverage
 htmlcov/
+
+# Browser-automation scratch: page snapshots, console logs, and anything
+# downloaded through a driven browser. Local debris, never part of the build.
+.playwright-mcp/

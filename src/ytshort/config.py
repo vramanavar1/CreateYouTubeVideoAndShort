@@ -131,6 +131,11 @@ class Settings:
     ffmpeg_path: str
     ffprobe_path: str
     audio_dir: Path
+    #: Credit line appended to every YouTube description. Empty when the track
+    #: needs no attribution, which is the usual case. Some licences make a credit a
+    #: condition of use, and an obligation that holds for every upload belongs in
+    #: the pipeline rather than in a human's memory.
+    audio_credit: str
     bumper_seconds: float
     max_short_seconds: int
     background_audio_gain: float
@@ -338,6 +343,7 @@ class Settings:
             ffmpeg_path=_env("YTSHORT_FFMPEG_PATH"),
             ffprobe_path=_env("YTSHORT_FFPROBE_PATH"),
             audio_dir=_resolve(_env("YTSHORT_AUDIO_DIR"), "assets/audio"),
+            audio_credit=_env("YTSHORT_AUDIO_CREDIT"),
             bumper_seconds=_env_float("YTSHORT_BUMPER_SECONDS", 1.5, problems),
             max_short_seconds=_env_int("YTSHORT_MAX_SHORT_SECONDS", 180, problems),
             background_audio_gain=_env_float("YTSHORT_BACKGROUND_AUDIO_GAIN", 0.35, problems),
@@ -446,12 +452,19 @@ class Settings:
                 [f"Audio licence manifest missing at {manifest}"] if tracks else []
             )
 
-        recorded = manifest.read_text(encoding="utf-8", errors="replace")
+        # Only table rows count. Scanning the whole document would let any passing
+        # mention satisfy the check -- including a warning that says to delete the
+        # file -- and a control you can satisfy by naming the problem is no control.
+        rows = "\n".join(
+            line
+            for line in manifest.read_text(encoding="utf-8", errors="replace").splitlines()
+            if line.lstrip().startswith("|")
+        )
         return [
             f"{track.name} has no row in {manifest.name} -- record its source and "
             "licence, or a copyright claim cannot be disputed"
             for track in tracks
-            if track.name not in recorded
+            if track.name not in rows
         ]
 
     @property

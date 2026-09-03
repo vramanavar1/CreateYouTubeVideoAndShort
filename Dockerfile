@@ -17,7 +17,15 @@
 ARG PYTHON_IMAGE=python:3.12-slim-bookworm
 # Never `:latest`. A mutable tag on an image we copy a *binary* out of means
 # whoever controls that tag controls this build.
-ARG UV_VERSION=0.5.11
+#
+# Keep this in step with the uv that writes uv.lock -- an older uv may not read a
+# lockfile written by a newer one, and the failure surfaces as a confusing
+# resolution error inside the build rather than at `uv lock` time.
+ARG UV_VERSION=0.9.18
+
+# A named stage, because `COPY --from` does not expand variables -- only `FROM`
+# does. This is the documented workaround for pinning the uv image by ARG.
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uvbin
 
 FROM ${PYTHON_IMAGE} AS build
 
@@ -26,8 +34,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PROJECT_ENVIRONMENT=/opt/venv
 
-ARG UV_VERSION
-COPY --from=ghcr.io/astral-sh/uv:${UV_VERSION} /uv /usr/local/bin/uv
+COPY --from=uvbin /uv /usr/local/bin/uv
 
 WORKDIR /app
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from ytshort import config
 from ytshort.config import Settings
 
 _MANIFEST = """# Audio licences
@@ -87,7 +88,34 @@ class TestAudioLicenceManifest:
         assert "notes.txt" not in _problem_text(build())
 
 
+    def test_a_name_mentioned_only_in_prose_does_not_count(self, audio_settings) -> None:
+        # The bug this catches: a whole-document substring match let any passing
+        # mention satisfy the check -- including a heading saying to delete the
+        # file. A control you can satisfy by naming the problem is no control.
+        audio, build = audio_settings
+        (audio / "AUDIO_LICENSES.md").write_text(
+            _MANIFEST + "\n## Action required: remove mystery.mp3\n", encoding="utf-8"
+        )
+        (audio / "mystery.mp3").write_bytes(b"ID3")
+
+        assert "mystery.mp3" in _problem_text(build())
+
+    def test_a_row_in_any_table_counts(self, audio_settings) -> None:
+        audio, build = audio_settings
+        (audio / "AUDIO_LICENSES.md").write_text(_MANIFEST, encoding="utf-8")
+        (audio / "calm-loop.mp3").write_bytes(b"ID3")
+
+        assert "no row" not in _problem_text(build())
+
+
 class TestTelemetryReadiness:
+    """Whether the extra is installed is patched, never inferred.
+
+    These assertions must not depend on what happens to be in the developer's
+    virtualenv -- the optional extra may or may not be present, and a test that
+    flips with it tells you nothing.
+    """
+
     def test_a_connection_string_without_the_extra_is_reported(
         self, audio_settings, monkeypatch
     ) -> None:
@@ -95,14 +123,32 @@ class TestTelemetryReadiness:
         # built without the extra. The app still runs, but doctor should say so.
         _audio, build = audio_settings
         monkeypatch.setenv("APPLICATIONINSIGHTS_CONNECTION_STRING", "InstrumentationKey=x")
+        monkeypatch.setattr(config, "_module_available", lambda _name: False)
 
         settings = build()
-        problems = _problem_text(settings)
         assert settings.telemetry_configured is True
-        assert "observability" in problems
+        assert "observability" in _problem_text(settings)
 
-    def test_nothing_is_reported_when_telemetry_is_unconfigured(
-        self, audio_settings
+    def test_nothing_is_reported_when_the_extra_is_installed(
+        self, audio_settings, monkeypatch
     ) -> None:
         _audio, build = audio_settings
+        monkeypatch.setenv("APPLICATIONINSIGHTS_CONNECTION_STRING", "InstrumentationKey=x")
+        monkeypatch.setattr(config, "_module_available", lambda _name: True)
+
         assert "observability" not in _problem_text(build())
+
+    def test_nothing_is_reported_when_telemetry_is_unconfigured(
+        self, audio_settings, monkeypatch
+    ) -> None:
+        _audio, build = audio_settings
+        monkeypatch.setattr(config, "_module_available", lambda _name: False)
+
+        assert "observability" not in _problem_text(build())
+
+    def test_a_missing_parent_package_does_not_raise(self) -> None:
+        # find_spec imports parent packages on the way down, so asking for
+        # "azure.monitor.opentelemetry" without the azure extra raises instead of
+        # returning None -- which would take out `ytshort doctor`, the one command
+        # you run when things are already broken.
+        assert config._module_available("definitely_not_installed.sub.module") is False

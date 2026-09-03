@@ -118,9 +118,33 @@ Short using it would collect a Content ID claim within minutes. This is also wha
 **Revisit** — no. A change here would contradict a statement made to a platform
 auditor.
 
-**Open risk.** Nothing currently enforces that a dropped track *has* a manifest
-row, even though the audit submission calls the manifest authoritative.
-`ytshort doctor` now warns about unlisted tracks.
+**Enforcement.** `ytshort doctor` warns about any track with no manifest row —
+the audit submission calls the manifest authoritative, so it should not be an
+honour system. The check matches **table rows only**: an earlier version scanned
+the whole document, which let a filename mentioned in prose count as recorded,
+including in a heading saying to delete the file. A control you can satisfy by
+naming the problem is no control.
+
+**The track in use (2026-09-03):** "SereneView" by Arulo, from
+[Mixkit](https://mixkit.co/free-stock-music/), under the Mixkit Stock Music Free
+License — no account, no attribution, commercial use on web platforms permitted.
+The licence text is quoted verbatim in `assets/audio/AUDIO_LICENSES.md` because
+Mixkit's page is JS-rendered and cannot be re-fetched as text.
+
+A first attempt used an ElevenLabs track generated on their **free tier**, which
+was discarded: their commercial page limits commercial use to "starter+ plans", so
+free-tier commercial rights were never established, while `docs/youtube-audit.md`
+tells Google the operator holds those rights. Attribution and commercial use are
+separate obligations — the ElevenLabs free tier required a credit line *and* did
+not grant commercial use, and satisfying the first would not have settled the
+second.
+
+**Residual risk, accepted knowingly.** Mixkit carries no equivalent of Google's
+guarantee that Audio Library tracks "won't be claimed by a rights holder through
+the Content ID system". Its licence forbids others registering its tracks with a
+rights management service, which lowers the odds without removing them. This was
+traded for not needing an account. **Revisit if** a Content ID claim ever lands —
+the YouTube Audio Library is the fallback, and only the manifest row changes.
 
 ---
 
