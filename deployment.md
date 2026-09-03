@@ -63,6 +63,22 @@ stored in the cloud. Treat that as the design constraint it is.
 
 ## Phase 1 — Google Cloud project
 
+> **You will need a public privacy policy before this phase and the next one are
+> done.** That is surprising for what is really a personal cron job, so here is
+> why, up front rather than at the point it blocks you:
+>
+> - **Phase 2's compliance audit** asks for privacy-policy screenshots as required
+>   evidence, and that audit is what stops every upload being force-locked to
+>   private.
+> - **Step 9** publishes the OAuth app, which Google requires for any External app
+>   in production — and publishing is not optional, because External apps in
+>   *Testing* get refresh tokens that expire after **7 days**. An hourly job would
+>   run for a week and then stop.
+>
+> Both roads lead to the same place, so this is not avoidable by reordering. The
+> repository already carries the three pages Google wants; **step 8 sub-step 4**
+> is where you host them, and it takes about five minutes.
+
 6. Go to <https://console.cloud.google.com> and create a project named
    `ytshort`, signed in **as the dedicated account**.
 

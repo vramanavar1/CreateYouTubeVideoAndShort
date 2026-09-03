@@ -14,6 +14,27 @@ submit data to it. This policy describes what the software actually does with
 data, because that is the only honest thing a policy for a single-operator tool
 can describe.
 
+## YouTube API Services
+
+**This application uses YouTube API Services.**
+
+By using it, you are also agreeing to be bound by the
+[YouTube Terms of Service](https://www.youtube.com/t/terms).
+
+Google's own handling of your data is described in the
+[Google Privacy Policy](http://www.google.com/policies/privacy).
+
+**You can revoke this application's access to your data at any time** through the
+Google security settings page at
+[https://security.google.com/settings/security/permissions](https://security.google.com/settings/security/permissions).
+Revoking access stops all mail reading and all publishing immediately.
+
+This application does **not** serve advertisements, and does **not** allow any
+third party to serve content or advertisements through it. It does **not** store,
+access, or collect information on or from your device — it runs entirely on the
+operator's own server infrastructure and has no client-side component beyond a
+review page the operator opens themselves.
+
 ## Whose data this covers
 
 Only the operator's own Google account — the account that installs the app and
@@ -50,6 +71,24 @@ is stored on infrastructure belonging to the author of this software.
 Image metadata is stripped during screening: EXIF and GPS location data are
 removed from images before anything is rendered or published.
 
+## Data retention and deletion
+
+- **Downloaded attachments and rendered video** are deleted automatically 30 days
+  after a job completes. The period is configurable via
+  `YTSHORT_MEDIA_RETENTION_DAYS`; 30 days is the default.
+- **Job records** — subject line, sender address, screening findings and the
+  resulting video id — are kept, because they are what stops the same email being
+  processed and published twice.
+- **YouTube API data is not cached.** Nothing retrieved from the YouTube Data API
+  is stored beyond the id and URL of the video this application itself uploaded.
+  No other channel, video or user data is fetched or retained.
+- **Immediate deletion on request.** Because the application is single-operator
+  and all storage sits in the operator's own Azure subscription, deleting the
+  Azure resource group removes every stored attachment, rendered video, job record
+  and log. Revoking access at
+  [https://security.google.com/settings/security/permissions](https://security.google.com/settings/security/permissions)
+  stops any further data being collected.
+
 ## What is sent to third parties
 
 Only these, and only when the relevant feature is switched on:
@@ -75,11 +114,10 @@ storage share, never included in logs, and never leaves that subscription.
 
 ## Revoking access
 
-The operator can revoke this application's access to their Google account at any
-time at
-[myaccount.google.com/permissions](https://myaccount.google.com/permissions).
+Access can be revoked at any time through the Google security settings page at
+[https://security.google.com/settings/security/permissions](https://security.google.com/settings/security/permissions).
 Doing so immediately stops all mail reading and publishing. Stored media and job
-records can be deleted by removing the Azure resource group.
+records are removed by deleting the Azure resource group.
 
 ## Changes
 
