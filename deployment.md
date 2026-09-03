@@ -255,8 +255,19 @@ debugging a filter graph through a container log is miserable.
     **These exports are load-bearing and invisible.** The `.bicepparam` files pull
     them with `readEnvironmentVariable()`, so `apps.bicep` never names them on the
     command line. In a new shell they are gone and the deployment fails with
-    `BCP427` before it touches Azure. Phases 7, 9 and 11 all re-run that
-    deployment — re-run this block first each time.
+    `BCP427` before it touches Azure.
+
+    > **`apps.bicep` needs eleven variables, and this block sets only nine.** The
+    > other two are `IMAGE_TAG` (step 24) and `ALLOWED_SENDERS` (step 25) — plus
+    > `EMAIL_RECIPIENTS`, which is not optional either despite reading like it.
+    > Any redeploy in phases 9 or 11 needs **all eleven**, so re-run this block and
+    > then re-export those three:
+    >
+    > ```bash
+    > export IMAGE_TAG=<the tag you deployed>   # or rebuild, step 24
+    > export ALLOWED_SENDERS=you@example.com
+    > export EMAIL_RECIPIENTS=you@example.com
+    > ```
 
     ```bash
     OUT=$(az deployment group show -g $RG -n foundation --query properties.outputs -o json)
@@ -533,8 +544,9 @@ can approve YouTube uploads**. Phases 7 and 9 exist to close that window.
     redeploy:
 
     ```bash
-    # If this is a new shell, re-run step 21's export block first -- the
-    # parameter file reads those values from the environment.
+    # In a new shell: re-run step 21's export block AND re-export IMAGE_TAG,
+    # ALLOWED_SENDERS and EMAIL_RECIPIENTS -- eleven variables in total, or
+    # this fails with BCP427 before it reaches Azure.
     az deployment group create -g $RG -n apps \
       -f infra/apps.bicep \
       -p infra/environments/apps.dev.bicepparam
@@ -645,7 +657,10 @@ verifies a specific design decision:
     ```
     Expect `clean`. Then confirm its identity has no vault-wide access:
     ```bash
-    az role assignment list --assignee $REVIEW_IDENTITY_PRINCIPAL_ID -o table
+    # --all is required. Without it this lists only subscription-scope
+    # assignments, and every grant below is at a child scope -- so it prints an
+    # empty table, which reads like "no permissions" rather than "wrong flag".
+    az role assignment list --all --assignee $REVIEW_IDENTITY_PRINCIPAL_ID -o table
     ```
     Expect **four**: `AcrPull`, the custom *ytshort Job Starter* role, and **two**
     Key Vault Secrets User assignments — one scoped to `.../secrets/csrf-secret`,
@@ -716,8 +731,9 @@ into a revision.
 
 Edit `cronExpression` in the parameter file and redeploy `apps.bicep`.
 
-> **Any `apps.bicep` redeploy needs two things around it.** Re-run step 21's
-> export block first (the parameter file reads the environment), and re-run
+> **Any `apps.bicep` redeploy needs two things around it.** First restore all
+> eleven environment variables — step 21's block, plus `IMAGE_TAG`,
+> `ALLOWED_SENDERS` and `EMAIL_RECIPIENTS` (see the note in step 21). Then re-run
 > **step 31** afterwards to restore `easyauth-client-secret`. This applies to this
 > section and to the audit-clearing one below.
 
@@ -743,7 +759,10 @@ the jobs.
 
 ```bash
 az group delete -n $RG --yes --no-wait
-az keyvault purge --name $KEY_VAULT_NAME   # purge protection means it lingers otherwise
+# Soft delete outlives the resource group, so purge explicitly. In dev this
+# succeeds; in prod purge protection blocks it by design and the vault stays
+# recoverable until the retention window expires.
+az keyvault purge --name $KEY_VAULT_NAME
 az ad app delete --id $APP_ID
 ```
 

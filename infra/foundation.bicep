@@ -178,8 +178,15 @@ module keyVault 'br/avm:res/key-vault/vault:0.14.0' = {
     // every other permission in the subscription.
     enableRbacAuthorization: true
     enableSoftDelete: true
-    softDeleteRetentionInDays: 90
-    enablePurgeProtection: true
+    softDeleteRetentionInDays: environment == 'prod' ? 90 : 7
+    // Prod only. Purge protection makes a deleted vault *unpurgeable* for the
+    // whole retention window -- and because the vault name derives from
+    // uniqueString(resourceGroup().id), deleting and recreating the resource
+    // group under the same name regenerates the same vault name, which then
+    // collides with the soft-deleted one. In prod that is the point. In dev it
+    // means one failed attempt locks you out of the resource-group name until
+    // the window expires, which is exactly when you most want to retry.
+    enablePurgeProtection: environment == 'prod'
     sku: 'standard'
     diagnosticSettings: [
       {
